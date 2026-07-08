@@ -183,15 +183,20 @@ action_change_admin() {
     echo -e "${CYAN}Current admin IDs:${NC} $(get_env_value 'ADMIN_IDS')"
     echo ""
     echo -e "${CYAN}Enter new admin ID(s) (comma-separated):${NC}"
-    echo -e "${YELLOW}Example: 123456789 یا 123456789,987654321${NC}"
+    echo -e "${YELLOW}Example: 123456789 or 123456789,987654321${NC}"
     read -rp "  ADMIN_IDS: " NEW_ADMIN
+    # Remove all spaces and strip any brackets the user may have typed
     NEW_ADMIN="${NEW_ADMIN// /}"
+    NEW_ADMIN="${NEW_ADMIN#[}"
+    NEW_ADMIN="${NEW_ADMIN%]}"
     if [[ ! "$NEW_ADMIN" =~ ^[0-9]+(,[0-9]+)*$ ]]; then
         warn "Invalid format. Only numbers and commas are allowed."
         return
     fi
+    # Wrap in brackets automatically
+    NEW_ADMIN="[${NEW_ADMIN}]"
     set_env_value "ADMIN_IDS" "$NEW_ADMIN"
-    success "Admin ID saved."
+    success "Admin ID saved: $NEW_ADMIN"
     echo -n "  Restart the bot? [y/N]: "
     read -r RESTART_CHOICE
     if [[ "$RESTART_CHOICE" =~ ^[yY]$ ]]; then

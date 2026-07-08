@@ -130,8 +130,14 @@ collect_config() {
     echo -e "   ${YELLOW}Example: 123456789 or 123456789,987654321${NC}"
     while true; do
         read -rp "   ADMIN_IDS: " ADMIN_IDS
+        # Remove all spaces (including around commas)
         ADMIN_IDS="${ADMIN_IDS// /}"
+        # Strip any existing brackets the user may have typed
+        ADMIN_IDS="${ADMIN_IDS#[}"
+        ADMIN_IDS="${ADMIN_IDS%]}"
         if [[ "$ADMIN_IDS" =~ ^[0-9]+(,[0-9]+)*$ ]]; then
+            # Wrap in brackets automatically
+            ADMIN_IDS="[${ADMIN_IDS}]"
             break
         fi
         warn "Invalid ID format. Only numbers and commas are allowed."
