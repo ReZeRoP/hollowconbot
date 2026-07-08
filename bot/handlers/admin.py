@@ -31,6 +31,8 @@ from bot.keyboards import (
     products_admin_inline,
     renew_complete_inline,
     user_admin_card_inline,
+    user_admin_card_inline_with_back,
+    users_list_inline,
 )
 from bot.messages import t
 from config import get_settings
@@ -105,6 +107,10 @@ class AdminCouponForm(StatesGroup):
 
 class AdminBroadcastForm(StatesGroup):
     text = State()
+
+
+class AdminUserSearchForm(StatesGroup):
+    query = State()
 
 
 class AdminSettingsForm(StatesGroup):
@@ -904,16 +910,99 @@ async def _render_user_card(db, tid: int):
     return text, markup
 
 
+_USERS_PER_PAGE = 10
+
+
+async def _send_users_page(target, page: int, search: str = "", edit: bool = False):
+    """رندر یک صفحه از لیست کاربران — target می‌تواند Message یا CallbackQuery باشد."""
+    db = get_db()
+    total = await db.get_all_users_count(search=search)
+    total_pages = max(1, -(-total // _USERS_PER_PAGE))  # ceil division
+    page = max(1, min(page, total_pages))
+    users = await db.get_users_page(page, _USERS_PER_PAGE, search=search)
+
+    search_label = f" | جستجو: «{search}»" if search else ""
+    text = (
+        f"👥 لیست کاربران{search_label}\n"
+        f"تعداد کل: {total} نفر | صفحه {page} از {total_pages}"
+    )
+    markup = users_list_inline(users, page, total_pages, search=search)
+
+    if edit:
+        msg = target.message if hasattr(target, "message") else target
+        await msg.edit_text(text, reply_markup=markup)
+    else:
+        msg = target if isinstance(target, Message) else target.message
+        await msg.answer(text, reply_markup=markup)
+
+
 @router.message(F.text == t("admin_users"))
 async def admin_users_info(message: Message):
     if message.from_user.id not in get_settings().admin_ids:
         return
-    await message.answer(
-        "👥 برای جستجوی کاربر، آیدی عددی تلگرام او را به این شکل بفرستید:\n"
-        "/user [telegram_id]\n\n"
-        "پس از جستجو، کارت کاربر با دکمه‌های مدیریتی (سرویس‌ها، ارسال پیام، "
-        "افزایش/کاهش موجودی، بن/آن‌بن) نمایش داده می‌شود."
+    await _send_users_page(message, page=1)
+
+
+@router.callback_query(F.data.startswith("ulist_page:"))
+async def ulist_page(callback: CallbackQuery, state: FSMContext):
+    if callback.from_user.id not in get_settings().admin_ids:
+        return
+    parts = callback.data.split(":", 2)
+    page = int(parts[1])
+    search = parts[2] if len(parts) > 2 else ""
+    await _send_users_page(callback, page=page, search=search, edit=True)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "ulist_noop")
+async def ulist_noop(callback: CallbackQuery):
+    await callback.answer()
+
+
+@router.callback_query(F.data == "ulist_search")
+async def ulist_search_start(callback: CallbackQuery, state: FSMContext):
+    if callback.from_user.id not in get_settings().admin_ids:
+        return
+    await state.set_state(AdminUserSearchForm.query)
+    await callback.message.answer(
+        "🔍 عبارت جستجو را وارد کنید:\n"
+        "(آیدی عددی، یوزرنیم یا نام کاربر)",
+        reply_markup=cancel_kb(),
     )
+    await callback.answer()
+
+
+@router.message(AdminUserSearchForm.query)
+async def ulist_search_do(message: Message, state: FSMContext):
+    if message.text == t("cancel"):
+        await state.clear()
+        await message.answer(t("operation_cancelled"), reply_markup=admin_menu())
+        return
+    query = (message.text or "").strip()
+    await state.clear()
+    await message.answer(t("operation_cancelled"), reply_markup=admin_menu())
+    await _send_users_page(message, page=1, search=query)
+
+
+@router.callback_query(F.data.startswith("ulist_view:"))
+async def ulist_view_user(callback: CallbackQuery):
+    if callback.from_user.id not in get_settings().admin_ids:
+        return
+    parts = callback.data.split(":")
+    tid = int(parts[1])
+    back_page = int(parts[2]) if len(parts) > 2 else 1
+    db = get_db()
+    text, _ = await _render_user_card(db, tid)
+    if not text:
+        await callback.answer("کاربر پیدا نشد", show_alert=True)
+        return
+    user = await db.get_user_by_telegram_id(tid)
+    banned = bool(user.get("is_banned")) if user else False
+    await callback.message.edit_text(
+        text,
+        reply_markup=user_admin_card_inline_with_back(tid, banned, back_page=back_page),
+    )
+    await callback.answer()
 
 
 @router.message(Command("user"))
@@ -1276,34 +1365,167 @@ async def broadcast_send(message: Message, state: FSMContext):
     await message.answer(f"✅ ارسال شد: {ok} | ❌ ناموفق: {fail}", reply_markup=admin_menu())
 
 
-# --- Settings ---
+# ─── Settings ────────────────────────────────────────────────────────────────
+
+# تعریف مشخصات هر کلید تنظیمات
+_SETTINGS_META = {
+    "welcome_text":       {"label": "👋 متن خوش‌آمد",            "hint": "متن پیامی که کاربران تازه‌وارد دریافت می‌کنند."},
+    "support_text":       {"label": "🆘 متن پشتیبانی",           "hint": "متن نمایش‌داده‌شده در بخش پشتیبانی."},
+    "support_username":   {"label": "📱 یوزرنیم پشتیبان",        "hint": "یوزرنیم ادمین پشتیبانی (بدون @). مثال: MorsVpnAdmin"},
+    "trial_enabled":      {"label": "🎁 اکانت تست (فعال/غیرفعال)", "hint": "فعال‌بودن اکانت تست: 1 = فعال، 0 = غیرفعال"},
+    "trial_product_id":   {"label": "📦 ID محصول تست",            "hint": "آیدی عددی محصولی که برای اکانت تست استفاده می‌شود."},
+    "trial_panel_id":     {"label": "🖥 ID پنل تست",              "hint": "آیدی عددی پنلی که اکانت تست روی آن ساخته می‌شود."},
+    "trial_volume_gb":    {"label": "📊 حجم تست (GB)",            "hint": "حجم اکانت تست به گیگابایت. مثال: 0.1"},
+    "trial_duration_days":{"label": "⏱ مدت تست (روز)",           "hint": "تعداد روزهای اکانت تست. مثال: 1"},
+    "channel_required":   {"label": "🔒 کانال اجباری (ID)",       "hint": "آیدی عددی یا یوزرنیم کانال. مثال: -1001234567890 یا @channel\nبرای غیرفعال‌کردن - بفرستید."},
+    "channel_invite_link":{"label": "🔗 لینک دعوت کانال",         "hint": "لینک دعوت کانال که به کاربران نمایش داده می‌شود.\nمثال: https://t.me/morsVPN"},
+    "min_deposit":        {"label": "💰 حداقل شارژ (تومان)",      "hint": "کمترین مبلغ قابل شارژ کیف پول به تومان. مثال: 10000"},
+}
+
+_SETTINGS_KEYS = list(_SETTINGS_META.keys())
+
+
+def settings_main_inline() -> InlineKeyboardMarkup:
+    """منوی اصلی تنظیمات — یک دکمه به ازای هر کلید."""
+    rows = []
+    for key, meta in _SETTINGS_META.items():
+        rows.append([InlineKeyboardButton(text=meta["label"], callback_data=f"cfg_edit:{key}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def _settings_overview_text(db) -> str:
+    lines = ["⚙️ تنظیمات ربات\n"]
+    for key, meta in _SETTINGS_META.items():
+        v = await db.get_setting(key, "")
+        v_safe = html.escape(v[:60]) + ("…" if len(v) > 60 else "")
+        lines.append(f"{meta['label']}:\n  <code>{v_safe or '—'}</code>\n")
+    lines.append("\nبرای تغییر هر مورد روی دکمه مربوطه بزنید 👇")
+    return "\n".join(lines)
+
+
 @router.message(F.text == t("admin_settings"))
 async def admin_settings(message: Message):
     if message.from_user.id not in get_settings().admin_ids:
         return
     db = get_db()
-    keys = [
-        "welcome_text", "support_text", "support_username",
-        "trial_enabled", "trial_product_id", "trial_panel_id",
-        "trial_volume_gb", "trial_duration_days",
-        "channel_required", "channel_invite_link", "min_deposit",
-    ]
-    lines = []
-    for k in keys:
-        v = await db.get_setting(k, "")
-        v_safe = html.escape(v[:50]) + ("..." if len(v) > 50 else "")
-        lines.append(f"{k}: {v_safe}")
+    text = await _settings_overview_text(db)
+    await message.answer(text, reply_markup=settings_main_inline(), parse_mode="HTML")
+
+
+@router.callback_query(F.data == "cfg_back")
+async def cfg_back(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    db = get_db()
+    text = await _settings_overview_text(db)
+    await callback.message.edit_text(text, reply_markup=settings_main_inline(), parse_mode="HTML")
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("cfg_edit:"))
+async def cfg_edit_start(callback: CallbackQuery, state: FSMContext):
+    if callback.from_user.id not in get_settings().admin_ids:
+        return
+    key = callback.data.split(":", 1)[1]
+    if key not in _SETTINGS_META:
+        await callback.answer("کلید نامعتبر", show_alert=True)
+        return
+
+    # کانال اجباری — فلو دو مرحله‌ای مخصوص خودش را دارد
+    if key == "channel_required":
+        await state.set_state(AdminChannelForm.channel_id)
+        await callback.message.answer(
+            "🔒 آیدی یا یوزرنیم کانال را برای بررسی عضویت ارسال کنید.\n"
+            "مثال: @your_channel یا -1001234567890 (آیدی عددی برای کانال خصوصی)\n\n"
+            "⚠️ ربات باید ادمین همان کانال باشد.\n"
+            "برای غیرفعال‌کردن عضویت اجباری، علامت - را بفرستید.",
+            reply_markup=cancel_kb(),
+        )
+        await callback.answer()
+        return
+
+    # لینک دعوت کانال — فلو تک‌مرحله‌ای
+    if key == "channel_invite_link":
+        await state.update_data(settings_key=key)
+        await state.set_state(AdminSettingsForm.value)
+        db = get_db()
+        cur = await db.get_setting(key, "")
+        await callback.message.answer(
+            f"{_SETTINGS_META[key]['label']}\n\n"
+            f"📌 مقدار فعلی: <code>{html.escape(cur) or '—'}</code>\n\n"
+            f"💡 {_SETTINGS_META[key]['hint']}\n\n"
+            "مقدار جدید را ارسال کنید:",
+            reply_markup=cancel_kb(),
+            parse_mode="HTML",
+        )
+        await callback.answer()
+        return
+
+    # بقیه کلیدها — تک‌مرحله‌ای عمومی
+    await state.update_data(settings_key=key)
+    await state.set_state(AdminSettingsForm.value)
+    db = get_db()
+    cur = await db.get_setting(key, "")
+    await callback.message.answer(
+        f"{_SETTINGS_META[key]['label']}\n\n"
+        f"📌 مقدار فعلی: <code>{html.escape(cur) or '—'}</code>\n\n"
+        f"💡 {_SETTINGS_META[key]['hint']}\n\n"
+        "مقدار جدید را ارسال کنید:",
+        reply_markup=cancel_kb(),
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
+
+@router.message(AdminSettingsForm.value)
+async def cfg_save_value(message: Message, state: FSMContext):
+    if message.text == t("cancel"):
+        await state.clear()
+        await message.answer(t("operation_cancelled"), reply_markup=admin_menu())
+        return
+
+    data = await state.get_data()
+    key = data.get("settings_key")
+    if not key:
+        await state.clear()
+        return
+
+    value = (message.text or "").strip()
+
+    # اعتبارسنجی‌های اختصاصی
+    if key == "trial_enabled" and value not in ("0", "1"):
+        await message.answer("❌ فقط 0 یا 1 قابل قبول است.")
+        return
+    if key in ("trial_product_id", "trial_panel_id", "min_deposit"):
+        if not value.isdigit() or int(value) <= 0:
+            await message.answer("❌ باید یک عدد صحیح مثبت باشد.")
+            return
+    if key in ("trial_volume_gb", "trial_duration_days"):
+        try:
+            assert float(value) > 0
+        except (ValueError, AssertionError):
+            await message.answer("❌ باید یک عدد مثبت باشد.")
+            return
+    if key == "channel_invite_link" and value != "-":
+        if not (value.startswith("http://") or value.startswith("https://")):
+            await message.answer("❌ لینک باید با http:// یا https:// شروع شود.")
+            return
+        if value == "-":
+            value = ""
+
+    db = get_db()
+    await db.set_setting(key, value)
+    await state.clear()
+
+    label = _SETTINGS_META.get(key, {}).get("label", key)
     await message.answer(
-        "⚙️ تنظیمات:\n" + "\n".join(lines) + "\n\n"
-        "تغییر: /set [key] [value]",
-        reply_markup=InlineKeyboardMarkup(
-            inline_keyboard=[
-                [InlineKeyboardButton(text="🔒 تنظیم عضویت اجباری کانال", callback_data="set_channel")],
-            ]
-        ),
+        f"✅ {label} با موفقیت ذخیره شد.\n"
+        f"مقدار جدید: <code>{html.escape(value)}</code>",
+        reply_markup=admin_menu(),
+        parse_mode="HTML",
     )
 
 
+# --- کانال اجباری (فلو دو مرحله‌ای) ---
 @router.callback_query(F.data == "set_channel")
 async def set_channel_start(callback: CallbackQuery, state: FSMContext):
     if callback.from_user.id not in get_settings().admin_ids:
@@ -1340,7 +1562,7 @@ async def set_channel_id(message: Message, state: FSMContext):
     await message.answer(
         "🔗 حالا لینک عضویت کانال (همانی که برای کاربران نمایش داده می‌شود) را ارسال کنید.\n"
         "مثال: https://t.me/your_channel\n"
-        "یا برای کانال خصوصی، یک لینک دعوت بسازید: https://t.me/+AbCdEfGhIjKlMnOpQr\n\n"
+        "یا برای کانال خصوصی: https://t.me/+AbCdEfGhIjKlMnOpQr\n\n"
         "اگر می‌خواهید فقط آیدی ثبت شود بدون نمایش دکمه لینک، علامت - را بفرستید."
     )
 
@@ -1371,6 +1593,7 @@ async def set_channel_invite_link(message: Message, state: FSMContext):
 
 @router.message(Command("set"))
 async def admin_set_setting(message: Message):
+    """دستور مستقیم /set برای تغییر تنظیم — هنوز کار می‌کند."""
     if message.from_user.id not in get_settings().admin_ids:
         return
     parts = message.text.split(maxsplit=2)

@@ -436,3 +436,59 @@ def admin_sub_actions_inline(sub_id: int, tid: int) -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text=t("back"), callback_data=f"uadm_subs:{tid}")],
         ]
     )
+
+
+# ─── Users list pagination ────────────────────────────────────────────────────
+
+def users_list_inline(users: list[dict], page: int, total_pages: int, search: str = "") -> InlineKeyboardMarkup:
+    """لیست کاربران با pagination و دکمه‌های ناوبری."""
+    rows = []
+
+    for u in users:
+        banned = "🚫 " if u.get("is_banned") else ""
+        uname = f"@{u['username']}" if u.get("username") else "—"
+        label = f"{banned}👤 {u['full_name'] or uname} | {u['telegram_id']}"
+        rows.append([
+            InlineKeyboardButton(text=label[:60], callback_data=f"ulist_view:{u['telegram_id']}:{page}")
+        ])
+
+    # ناوبری صفحه‌بندی
+    nav = []
+    if page > 1:
+        nav.append(InlineKeyboardButton(text="◀️ قبلی", callback_data=f"ulist_page:{page - 1}:{search}"))
+    nav.append(InlineKeyboardButton(text=f"📄 {page}/{total_pages}", callback_data="ulist_noop"))
+    if page < total_pages:
+        nav.append(InlineKeyboardButton(text="بعدی ▶️", callback_data=f"ulist_page:{page + 1}:{search}"))
+    if nav:
+        rows.append(nav)
+
+    # دکمه‌های پایین
+    rows.append([InlineKeyboardButton(text="🔍 جستجو", callback_data="ulist_search")])
+    if search:
+        rows.append([InlineKeyboardButton(text="❌ پاک کردن جستجو", callback_data="ulist_page:1:")])
+
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def user_admin_card_inline_with_back(tid: int, banned: bool, back_page: int = 1) -> InlineKeyboardMarkup:
+    """کارت کاربر با دکمه بازگشت به لیست."""
+    ban_btn = (
+        InlineKeyboardButton(text="✅ آن‌بن کردن", callback_data=f"uadm_unban:{tid}")
+        if banned
+        else InlineKeyboardButton(text="🚫 بن کردن", callback_data=f"uadm_ban:{tid}")
+    )
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="📦 سرویس‌ها", callback_data=f"uadm_subs:{tid}"),
+                InlineKeyboardButton(text="✉️ ارسال پیام", callback_data=f"uadm_msg:{tid}"),
+            ],
+            [
+                InlineKeyboardButton(text="➕ افزایش موجودی", callback_data=f"uadm_addbal:{tid}"),
+                InlineKeyboardButton(text="➖ کاهش موجودی", callback_data=f"uadm_subbal:{tid}"),
+            ],
+            [ban_btn],
+            [InlineKeyboardButton(text="🔄 بروزرسانی", callback_data=f"uadm_refresh:{tid}")],
+            [InlineKeyboardButton(text="🔙 بازگشت به لیست", callback_data=f"ulist_page:{back_page}:")],
+        ]
+    )

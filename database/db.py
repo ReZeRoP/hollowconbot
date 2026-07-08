@@ -270,9 +270,30 @@ class Database:
             "UPDATE users SET phone = ? WHERE id = ?", (phone, user_id)
         )
 
-    async def get_all_users_count(self) -> int:
-        row = await self._fetchone("SELECT COUNT(*) as c FROM users")
+    async def get_all_users_count(self, search: str = "") -> int:
+        if search:
+            row = await self._fetchone(
+                "SELECT COUNT(*) as c FROM users WHERE "
+                "CAST(telegram_id AS TEXT) LIKE ? OR username LIKE ? OR full_name LIKE ?",
+                (f"%{search}%", f"%{search}%", f"%{search}%"),
+            )
+        else:
+            row = await self._fetchone("SELECT COUNT(*) as c FROM users")
         return row["c"] if row else 0
+
+    async def get_users_page(self, page: int, per_page: int = 10, search: str = "") -> list[dict]:
+        offset = (page - 1) * per_page
+        if search:
+            return await self._fetchall(
+                "SELECT * FROM users WHERE "
+                "CAST(telegram_id AS TEXT) LIKE ? OR username LIKE ? OR full_name LIKE ? "
+                "ORDER BY id DESC LIMIT ? OFFSET ?",
+                (f"%{search}%", f"%{search}%", f"%{search}%", per_page, offset),
+            )
+        return await self._fetchall(
+            "SELECT * FROM users ORDER BY id DESC LIMIT ? OFFSET ?",
+            (per_page, offset),
+        )
 
     # --- Settings ---
     async def get_setting(self, key: str, default: str = "") -> str:
