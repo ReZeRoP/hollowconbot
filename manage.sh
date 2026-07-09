@@ -191,6 +191,32 @@ action_change_token() {
     fi
     set_env_value "BOT_TOKEN" "$NEW_TOKEN"
     success "Token saved."
+
+    # The web panel (if installed) keeps its own copy of BOT_TOKEN in
+    # webapp/.env to verify Telegram Mini App initData (HMAC signed with the
+    # bot token). If we don't sync it here too, the panel keeps validating
+    # against the OLD token forever and Mini App auto-login breaks silently
+    # with no obvious error pointing back to "you changed the token" —
+    # it just looks like a generic "connection error" to the end user.
+    if [[ -f "$WEBAPP_ENV" ]]; then
+        if grep -qE '^BOT_TOKEN=' "$WEBAPP_ENV" 2>/dev/null; then
+            sed -i "s|^BOT_TOKEN=.*|BOT_TOKEN=${NEW_TOKEN}|" "$WEBAPP_ENV"
+        else
+            echo "BOT_TOKEN=${NEW_TOKEN}" >> "$WEBAPP_ENV"
+        fi
+        success "Web panel token synced too."
+        if systemctl is-active --quiet "$WEBAPP_SERVICE" 2>/dev/null; then
+            log "Restarting web panel so it picks up the new token..."
+            systemctl restart "$WEBAPP_SERVICE"
+            sleep 1
+            if systemctl is-active --quiet "$WEBAPP_SERVICE"; then
+                success "Web panel restarted."
+            else
+                error "Web panel failed to restart. Check: journalctl -u $WEBAPP_SERVICE -n 50"
+            fi
+        fi
+    fi
+
     echo -n "  Restart the bot? [y/N]: "
     read -r RESTART_CHOICE
     if [[ "$RESTART_CHOICE" =~ ^[yY]$ ]]; then
