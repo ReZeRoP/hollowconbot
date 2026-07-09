@@ -8,8 +8,11 @@ set -euo pipefail
 
 # ------------------------------------------------------------
 INSTALL_DIR="/opt/BananaBot"
+WEBAPP_DIR="$INSTALL_DIR/webapp"
 SERVICE_NAME="bananabot"
+WEBAPP_SERVICE="bananabot-web"
 ENV_FILE="$INSTALL_DIR/.env"
+WEBAPP_ENV="$WEBAPP_DIR/.env"
 
 # ------------------------------------------------------------
 RED='\033[0;31m'

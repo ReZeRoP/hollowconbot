@@ -17,9 +17,12 @@ NC='\033[0m'
 # ------------------------------------------------------------
 REPO_URL="https://github.com/mazyarzohdi/BananaBot"
 INSTALL_DIR="/opt/BananaBot"
+WEBAPP_DIR="$INSTALL_DIR/webapp"
 SERVICE_NAME="bananabot"
+WEBAPP_SERVICE="bananabot-web"
 PYTHON_MIN="3.11"
 VENV_DIR="$INSTALL_DIR/.venv"
+WEBAPP_VENV="$WEBAPP_DIR/.venv"
 LOG_FILE="/var/log/bananabot-install.log"
 
 # ------------------------------------------------------------
@@ -192,6 +195,11 @@ DEFAULT_LANG=${DEFAULT_LANG}
 CARD_NUMBER=${CARD_NUMBER}
 CARD_HOLDER=${CARD_HOLDER}
 REQUIRED_CHANNEL=${REQUIRED_CHANNEL}
+WEB_DOMAIN=${WEB_DOMAIN}
+WEB_PORT=${WEB_PORT}
+WEB_PATH=${WEB_PATH}
+SSL_CERT=${SSL_CERT}
+SSL_KEY=${SSL_KEY}
 EOF
     chmod 600 "$INSTALL_DIR/.env"
     success ".env file created."
@@ -230,6 +238,86 @@ EOF
     systemctl enable "$SERVICE_NAME" >> "$LOG_FILE" 2>&1
     success "systemd service created and enabled."
 }
+
+setup_webapp() {
+    if [[ "$SETUP_WEBAPP" != "yes" ]]; then
+        log "Skipping web panel setup."
+        return
+    fi
+
+    log "Setting up web panel..."
+
+    # Virtual env for webapp
+    python3 -m venv "$WEBAPP_VENV" >> "$LOG_FILE" 2>&1
+    "$WEBAPP_VENV/bin/pip" install --upgrade pip --quiet >> "$LOG_FILE" 2>&1
+    "$WEBAPP_VENV/bin/pip" install -r "$WEBAPP_DIR/requirements.txt" --quiet >> "$LOG_FILE" 2>&1
+
+    # Generate Django secret key
+    DJANGO_SECRET=$(python3 -c "import secrets; print(secrets.token_urlsafe(50))")
+
+    # Write webapp .env
+    cat > "$WEBAPP_DIR/.env" <<EOF
+DJANGO_SECRET_KEY=${DJANGO_SECRET}
+DJANGO_DEBUG=0
+DJANGO_ALLOWED_HOSTS=${WEB_DOMAIN},localhost,127.0.0.1
+BOT_TOKEN=${BOT_TOKEN}
+ADMIN_IDS=${ADMIN_IDS}
+BOT_DB_PATH=${INSTALL_DIR}/data/bot.db
+WEB_PATH=${WEB_PATH}
+EOF
+    chmod 600 "$WEBAPP_DIR/.env"
+
+    # Create a startup wrapper that loads the .env
+    cat > "$WEBAPP_DIR/start_webapp.sh" <<'STARTEOF'
+#!/usr/bin/env bash
+set -a
+source "$(dirname "$0")/.env"
+set +a
+exec "$(dirname "$0")/.venv/bin/gunicorn"     --workers 2     --bind "0.0.0.0:${WEB_PORT:-8080}"     --access-logfile /var/log/bananabot-web-access.log     --error-logfile  /var/log/bananabot-web-error.log     bananabot_web.wsgi:application
+STARTEOF
+    chmod +x "$WEBAPP_DIR/start_webapp.sh"
+
+    # Collect static files
+    cd "$WEBAPP_DIR"
+    set -a; source "$WEBAPP_DIR/.env"; set +a
+    "$WEBAPP_VENV/bin/python" manage.py collectstatic --noinput >> "$LOG_FILE" 2>&1
+
+    # Migrate sessions table
+    "$WEBAPP_VENV/bin/python" manage.py migrate --run-syncdb >> "$LOG_FILE" 2>&1
+
+    # systemd service for webapp
+    cat > "/etc/systemd/system/${WEBAPP_SERVICE}.service" <<EOF
+[Unit]
+Description=BananaBot Web Panel
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=${WEBAPP_DIR}
+ExecStart=${WEBAPP_DIR}/start_webapp.sh
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=${WEBAPP_SERVICE}
+EnvironmentFile=${WEBAPP_DIR}/.env
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    systemctl daemon-reload
+    systemctl enable "$WEBAPP_SERVICE" >> "$LOG_FILE" 2>&1
+    systemctl start  "$WEBAPP_SERVICE"
+    sleep 2
+
+    if systemctl is-active --quiet "$WEBAPP_SERVICE"; then
+        success "Web panel started on port ${WEB_PORT}."
+    else
+        warn "Web panel failed to start. Check: journalctl -u ${WEBAPP_SERVICE} -n 30"
+    fi
+}
+
 
 start_bot() {
     log "Starting bot..."
@@ -281,6 +369,7 @@ main() {
     write_env_file
     create_data_dir
     create_systemd_service
+    setup_webapp
     start_bot
     print_summary
 }
