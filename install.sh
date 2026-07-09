@@ -54,7 +54,9 @@ echo ""
 }
 
 check_root() {
-    [[ $EUID -ne 0 ]] && error "Must be run as root. Use: sudo bash install.sh"
+    if [[ $EUID -ne 0 ]]; then
+        error "Must be run as root. Use: sudo bash install.sh"
+    fi
 }
 
 check_os() {
@@ -81,7 +83,9 @@ check_python() {
     command -v python3 &>/dev/null || error "Python3 not found!"
     PY_VER=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
     PY_OK=$(python3 -c "import sys; print(1 if sys.version_info >= (3,11) else 0)")
-    [[ "$PY_OK" != "1" ]] && error "Python $PYTHON_MIN+ required. Found: $PY_VER"
+    if [[ "$PY_OK" != "1" ]]; then
+        error "Python $PYTHON_MIN+ required. Found: $PY_VER"
+    fi
     success "Python $PY_VER detected."
 }
 
@@ -122,7 +126,9 @@ collect_config() {
         echo -e "${CYAN}1) Telegram Bot Token (from @BotFather):${NC}"
         read -rp "   BOT_TOKEN: " BOT_TOKEN
         BOT_TOKEN="${BOT_TOKEN// /}"
-        [[ -n "$BOT_TOKEN" && "$BOT_TOKEN" != "your_bot_token_here" ]] && break
+        if [[ -n "$BOT_TOKEN" && "$BOT_TOKEN" != "your_bot_token_here" ]]; then
+            break
+        fi
         warn "Invalid token. Please try again."
     done
 
