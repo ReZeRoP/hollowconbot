@@ -57,6 +57,11 @@ class AdminPanelForm(StatesGroup):
     sub_link_sample = State()
 
 
+class AdminPanelEditInboundsForm(StatesGroup):
+    panel_id = State()
+    inbound_ids = State()
+
+
 class AdminPanelSubLinkForm(StatesGroup):
     value = State()
 
@@ -384,6 +389,86 @@ async def list_inbounds(callback: CallbackQuery):
     except Exception as e:
         await callback.message.answer(f"❌ {e}")
     await callback.answer()
+
+
+@router.callback_query(F.data.startswith("edit_inbounds:"))
+async def edit_inbounds_start(callback: CallbackQuery, state: FSMContext):
+    """شروع فلوی ویرایش Inbounds — نمایش لیست فعلی + درخواست ورودی جدید."""
+    if callback.from_user.id not in get_settings().admin_ids:
+        return
+    panel_id = int(callback.data.split(":")[1])
+    db = get_db()
+    panel = await db.get_panel(panel_id)
+    if not panel:
+        await callback.answer("پنل پیدا نشد", show_alert=True)
+        return
+
+    # پارس Inbounds فعلی برای نمایش
+    try:
+        current_ids = json.loads(panel["inbound_ids"]) if panel["inbound_ids"] else []
+    except (json.JSONDecodeError, TypeError):
+        current_ids = []
+
+    # تلاش برای گرفتن لیست Inbounds از پنل (اگر اتصال برقرار باشد)
+    live_list = ""
+    try:
+        client = XUIClient(panel["url"], panel["api_token"])
+        options = await client.list_inbound_options()
+        if options:
+            lines = [f"  ID {o['id']}: {o.get('remark', '---')} ({o.get('protocol', '---')})" for o in options]
+            live_list = "\n\n📡 Inbounds موجود در پنل:\n" + "\n".join(lines)
+    except Exception:
+        live_list = "\n\n⚠️ اتصال به پنل برقرار نشد — IDها را دستی وارد کنید."
+
+    await state.update_data(panel_id=panel_id)
+    await state.set_state(AdminPanelEditInboundsForm.inbound_ids)
+
+    msg_text = (
+        f"✏️ ویرایش Inbounds — پنل: {panel['name']}\n"
+        f"📋 مقدار فعلی: {current_ids}"
+        f"{live_list}\n\n"
+        "IDهای جدید را با کاما وارد کنید:\n"
+        "مثال: 54,81,83"
+    )
+    await callback.message.answer(msg_text, reply_markup=cancel_kb())
+    await callback.answer()
+
+
+@router.message(AdminPanelEditInboundsForm.inbound_ids)
+async def edit_inbounds_save(message: Message, state: FSMContext):
+    """ذخیره Inbounds جدید در دیتابیس."""
+    if message.text == t("cancel"):
+        await state.clear()
+        await message.answer(t("operation_cancelled"), reply_markup=admin_menu())
+        return
+
+    raw = (message.text or "").strip()
+    # حذف bracket اگر کاربر به فرمت [54,81,83] وارد کرد
+    raw = raw.strip("[]")
+
+    try:
+        ids = [int(x.strip()) for x in raw.split(",") if x.strip()]
+        if not ids:
+            raise ValueError
+    except ValueError:
+        await message.answer(
+            "❌ فرمت نامعتبر. باید IDهای عددی با کاما باشد.\n"
+            "مثال: 54,81,83"
+        )
+        return
+
+    data = await state.get_data()
+    panel_id = data["panel_id"]
+    db = get_db()
+    await db.update_panel(panel_id, inbound_ids=json.dumps(ids))
+    await state.clear()
+
+    panel = await db.get_panel(panel_id)
+    success_text = (
+        f"✅ Inbounds پنل «{panel['name']}» بروز شد.\n"
+        f"📋 مقدار جدید: {ids}"
+    )
+    await message.answer(success_text, reply_markup=admin_menu())
 
 
 @router.callback_query(F.data.startswith("del_panel:"))

@@ -260,6 +260,9 @@ def panel_actions_inline(panel_id: int, is_active: bool = True) -> InlineKeyboar
                 InlineKeyboardButton(text="📋 Inbounds", callback_data=f"inbounds:{panel_id}"),
             ],
             [
+                InlineKeyboardButton(text="✏️ ویرایش Inbounds", callback_data=f"edit_inbounds:{panel_id}"),
+            ],
+            [
                 InlineKeyboardButton(text="🔗 تنظیم لینک ساب", callback_data=f"set_sublink:{panel_id}"),
             ],
             [toggle_btn],

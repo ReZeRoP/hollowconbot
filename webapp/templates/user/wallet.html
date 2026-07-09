@@ -1,0 +1,35 @@
+{% extends "shared/base.html" %}
+{% block title %}کیف پول{% endblock %}
+{% block page_title %}کیف پول{% endblock %}
+{% block nav_wallet %}active{% endblock %}
+{% block content %}
+<div class="grid-2">
+  <div class="card">
+    <h2 class="card-title"><i class="fa fa-wallet"></i> موجودی فعلی</h2>
+    <div class="balance-display">{{ db_user.balance|default:0|floatformat:0 }} <span>تومان</span></div>
+  </div>
+
+  {% if card_number %}
+  <div class="card">
+    <h2 class="card-title"><i class="fa fa-credit-card"></i> اطلاعات کارت</h2>
+    <div class="card-number">{{ card_number }}</div>
+    <div class="card-holder">{{ card_holder }}</div>
+    <p class="wallet-note">
+      <i class="fa fa-info-circle"></i>
+      حداقل مبلغ واریز: <strong>{{ min_deposit|floatformat:0 }} تومان</strong>
+    </p>
+    <p class="wallet-note">
+      بعد از واریز، رسید پرداخت را از طریق ربات ارسال کنید تا موجودی شارژ شود.
+    </p>
+    <a href="https://t.me/" target="_blank" class="btn btn-primary w-full mt-2">
+      <i class="fa fa-telegram"></i> ارسال رسید در ربات
+    </a>
+  </div>
+  {% else %}
+  <div class="card empty-card">
+    <i class="fa fa-credit-card fa-2x"></i>
+    <p>اطلاعات کارت بانکی هنوز توسط ادمین تنظیم نشده.</p>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

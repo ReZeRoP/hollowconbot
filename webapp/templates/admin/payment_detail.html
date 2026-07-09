@@ -1,0 +1,46 @@
+{% extends "shared/base.html" %}
+{% block title %}پرداخت #{{ payment.id }}{% endblock %}
+{% block page_title %}جزئیات پرداخت{% endblock %}
+{% block nav_payments %}active{% endblock %}
+{% block content %}
+<a href="{% url 'panel:admin_payments' %}" class="btn btn-ghost mb-3"><i class="fa fa-arrow-right"></i> بازگشت</a>
+<div class="grid-2">
+  <div class="card">
+    <h2 class="card-title">اطلاعات پرداخت #{{ payment.id }}</h2>
+    <div class="detail-row"><span>کاربر:</span><strong>{{ payment.full_name|default:payment.telegram_id }}</strong></div>
+    <div class="detail-row"><span>مبلغ:</span><strong class="text-green">{{ payment.amount|floatformat:0 }} تومان</strong></div>
+    <div class="detail-row"><span>روش پرداخت:</span>{{ payment.payment_method }}</div>
+    <div class="detail-row"><span>وضعیت:</span>
+      {% if payment.status == 'pending' %}<span class="badge-orange">در انتظار</span>
+      {% elif payment.status == 'approved' %}<span class="badge-green">تأیید شده</span>
+      {% else %}<span class="badge-red">رد شده</span>{% endif %}
+    </div>
+    {% if payment.admin_note %}
+    <div class="detail-row"><span>یادداشت ادمین:</span>{{ payment.admin_note }}</div>
+    {% endif %}
+    <div class="detail-row"><span>تاریخ:</span><small>{{ payment.created_at }}</small></div>
+  </div>
+
+  {% if payment.status == 'pending' %}
+  <div class="card">
+    <h2 class="card-title">اقدام</h2>
+    <form method="post">
+      {% csrf_token %}
+      <div class="form-group">
+        <label>یادداشت (اختیاری)</label>
+        <input type="text" name="note" class="input" placeholder="یادداشت برای کاربر..."/>
+      </div>
+      <div class="btn-group">
+        <button type="submit" name="action" value="approve" class="btn btn-success">
+          <i class="fa fa-check"></i> تأیید و شارژ موجودی
+        </button>
+        <button type="submit" name="action" value="reject" class="btn btn-danger"
+          onclick="return confirm('آیا مطمئن به رد هستید؟')">
+          <i class="fa fa-times"></i> رد پرداخت
+        </button>
+      </div>
+    </form>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

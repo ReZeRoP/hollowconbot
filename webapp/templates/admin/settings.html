@@ -1,0 +1,25 @@
+{% extends "shared/base.html" %}
+{% block title %}تنظیمات{% endblock %}
+{% block page_title %}تنظیمات ربات{% endblock %}
+{% block nav_settings %}active{% endblock %}
+{% block content %}
+<div class="card" style="max-width:700px">
+  <h2 class="card-title"><i class="fa fa-gear"></i> تنظیمات ربات</h2>
+  <form method="post">
+    {% csrf_token %}
+    {% for f in fields %}
+    <div class="form-group">
+      <label>{{ f.label }}</label>
+      {% if f.type == "textarea" %}
+        <textarea name="{{ f.key }}" class="input" rows="3">{{ f.value }}</textarea>
+      {% else %}
+        <input type="text" name="{{ f.key }}" value="{{ f.value }}" class="input"/>
+      {% endif %}
+    </div>
+    {% endfor %}
+    <button type="submit" class="btn btn-primary w-full mt-3">
+      <i class="fa fa-save"></i> ذخیره همه تنظیمات
+    </button>
+  </form>
+</div>
+{% endblock %}

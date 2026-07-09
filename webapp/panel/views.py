@@ -1,0 +1,336 @@
+"""Views for BananaBot Web Panel."""
+
+import json
+from django.shortcuts import render, redirect
+from django.http import JsonResponse, HttpRequest
+from django.views.decorators.http import require_POST
+from django.conf import settings
+from django.contrib import messages
+
+from .auth import login_required, admin_required, verify_telegram_auth, get_current_user, is_admin
+from . import db as bot_db
+
+
+# ── Auth ──────────────────────────────────────────────────────────────────────
+
+def login_view(request: HttpRequest):
+    if request.session.get("tg_user"):
+        return redirect("panel:dashboard")
+
+    if request.method == "GET" and "id" in request.GET:
+        data = dict(request.GET)
+        data = {k: v[0] if isinstance(v, list) else v for k, v in data.items()}
+        if verify_telegram_auth(data):
+            request.session["tg_user"] = data
+            return redirect("panel:dashboard")
+        else:
+            messages.error(request, "اعتبارسنجی تلگرام ناموفق بود.")
+
+    bot_username = bot_db.get_setting("bot_username", "")
+    return render(request, "shared/login.html", {
+        "bot_username": bot_username,
+        "bot_token_set": bool(settings.BOT_TOKEN),
+    })
+
+
+def logout_view(request: HttpRequest):
+    request.session.flush()
+    return redirect("panel:login")
+
+
+# ── Dashboard ─────────────────────────────────────────────────────────────────
+
+@login_required
+def dashboard(request: HttpRequest):
+    tg_user = get_current_user(request)
+    _is_admin = is_admin(request)
+
+    db_user = bot_db.get_user_by_telegram_id(int(tg_user["id"]))
+
+    if _is_admin:
+        stats = {
+            "users": bot_db.get_users_stats(),
+            "revenue": bot_db.get_revenue_stats(),
+            "active_subs": bot_db.get_active_subscriptions_count(),
+            "products": len(bot_db.get_products(active_only=False)),
+            "panels": len(bot_db.get_panels()),
+            "pending_payments": len(bot_db.get_pending_payments()),
+        }
+        return render(request, "admin/dashboard.html", {
+            "tg_user": tg_user,
+            "db_user": db_user,
+            "stats": stats,
+            "is_admin": True,
+        })
+    else:
+        subscriptions = bot_db.get_user_subscriptions(db_user["id"]) if db_user else []
+        products = bot_db.get_products(active_only=True)
+        return render(request, "user/dashboard.html", {
+            "tg_user": tg_user,
+            "db_user": db_user,
+            "subscriptions": subscriptions,
+            "products": products,
+            "is_admin": False,
+        })
+
+
+# ── Admin: Users ──────────────────────────────────────────────────────────────
+
+@admin_required
+def admin_users(request: HttpRequest):
+    page = int(request.GET.get("page", 1))
+    search = request.GET.get("q", "")
+    users, total = bot_db.get_users_page(page, per_page=20, search=search)
+    total_pages = max(1, -(-total // 20))
+    return render(request, "admin/users.html", {
+        "users": users, "total": total,
+        "page": page, "total_pages": total_pages,
+        "search": search, "is_admin": True,
+    })
+
+
+@admin_required
+def admin_user_detail(request: HttpRequest, telegram_id: int):
+    user = bot_db.get_user_by_telegram_id(telegram_id)
+    if not user:
+        messages.error(request, "کاربر پیدا نشد.")
+        return redirect("panel:admin_users")
+
+    subscriptions = bot_db.get_user_subscriptions(user["id"])
+
+    if request.method == "POST":
+        action = request.POST.get("action")
+        if action == "add_balance":
+            amount = int(request.POST.get("amount", 0))
+            bot_db.update_user_balance(user["id"], amount)
+            messages.success(request, f"{amount:,} تومان به موجودی اضافه شد.")
+        elif action == "sub_balance":
+            amount = int(request.POST.get("amount", 0))
+            bot_db.update_user_balance(user["id"], -amount)
+            messages.success(request, f"{amount:,} تومان از موجودی کم شد.")
+        elif action == "ban":
+            bot_db.set_user_banned(user["id"], True)
+            messages.warning(request, "کاربر بن شد.")
+        elif action == "unban":
+            bot_db.set_user_banned(user["id"], False)
+            messages.success(request, "کاربر آن‌بن شد.")
+        return redirect("panel:admin_user_detail", telegram_id=telegram_id)
+
+    user = bot_db.get_user_by_telegram_id(telegram_id)
+    return render(request, "admin/user_detail.html", {
+        "u": user, "subscriptions": subscriptions, "is_admin": True,
+    })
+
+
+# ── Admin: Products ───────────────────────────────────────────────────────────
+
+@admin_required
+def admin_products(request: HttpRequest):
+    products = bot_db.get_products(active_only=False)
+    panels = bot_db.get_panels()
+    return render(request, "admin/products.html", {
+        "products": products, "panels": panels, "is_admin": True,
+    })
+
+
+@admin_required
+def admin_product_edit(request: HttpRequest, product_id: int = 0):
+    panels = bot_db.get_panels()
+    product = bot_db.get_product(product_id) if product_id else None
+
+    if request.method == "POST":
+        data = {
+            "name": request.POST["name"],
+            "panel_id": int(request.POST["panel_id"]),
+            "volume_gb": float(request.POST["volume_gb"]),
+            "duration_days": int(request.POST["duration_days"]),
+            "price": int(request.POST["price"]),
+            "description": request.POST.get("description", ""),
+            "is_active": 1 if request.POST.get("is_active") else 0,
+        }
+        if product_id:
+            bot_db.update_product(product_id, **data)
+            messages.success(request, "محصول ویرایش شد.")
+        else:
+            bot_db.add_product(**{k: v for k, v in data.items() if k != "is_active"})
+            messages.success(request, "محصول اضافه شد.")
+        return redirect("panel:admin_products")
+
+    return render(request, "admin/product_edit.html", {
+        "product": product, "panels": panels, "is_admin": True,
+    })
+
+
+@admin_required
+@require_POST
+def admin_product_delete(request: HttpRequest, product_id: int):
+    bot_db.delete_product(product_id)
+    messages.success(request, "محصول حذف شد.")
+    return redirect("panel:admin_products")
+
+
+# ── Admin: Panels ─────────────────────────────────────────────────────────────
+
+@admin_required
+def admin_panels(request: HttpRequest):
+    panels = bot_db.get_panels(active_only=False)
+    return render(request, "admin/panels.html", {
+        "panels": panels, "is_admin": True,
+    })
+
+
+@admin_required
+def admin_panel_edit(request: HttpRequest, panel_id: int):
+    panel = bot_db.get_panel(panel_id)
+    if not panel:
+        messages.error(request, "پنل پیدا نشد.")
+        return redirect("panel:admin_panels")
+
+    if request.method == "POST":
+        action = request.POST.get("action")
+        if action == "update_inbounds":
+            raw = request.POST.get("inbound_ids", "").strip().strip("[]")
+            try:
+                ids = [int(x.strip()) for x in raw.split(",") if x.strip()]
+                bot_db.update_panel(panel_id, inbound_ids=json.dumps(ids))
+                messages.success(request, f"Inbounds بروز شد: {ids}")
+            except ValueError:
+                messages.error(request, "فرمت نامعتبر. مثال: 54,81,83")
+        elif action == "toggle_active":
+            new_val = 0 if panel["is_active"] else 1
+            bot_db.update_panel(panel_id, is_active=new_val)
+            messages.success(request, "وضعیت پنل تغییر کرد.")
+        elif action == "toggle_onhold":
+            new_val = 0 if panel.get("on_hold") else 1
+            bot_db.update_panel(panel_id, on_hold=new_val)
+            messages.success(request, "وضعیت On-Hold تغییر کرد.")
+        elif action == "delete":
+            bot_db.delete_panel(panel_id)
+            messages.success(request, "پنل حذف شد.")
+            return redirect("panel:admin_panels")
+        return redirect("panel:admin_panel_edit", panel_id=panel_id)
+
+    panel = bot_db.get_panel(panel_id)
+    try:
+        inbound_ids = json.loads(panel["inbound_ids"])
+    except Exception:
+        inbound_ids = []
+    return render(request, "admin/panel_edit.html", {
+        "panel": panel, "inbound_ids": inbound_ids, "is_admin": True,
+    })
+
+
+# ── Admin: Payments ───────────────────────────────────────────────────────────
+
+@admin_required
+def admin_payments(request: HttpRequest):
+    page = int(request.GET.get("page", 1))
+    status = request.GET.get("status", "")
+    payments, total = bot_db.get_payments_page(page, per_page=20, status=status)
+    total_pages = max(1, -(-total // 20))
+    return render(request, "admin/payments.html", {
+        "payments": payments, "total": total,
+        "page": page, "total_pages": total_pages,
+        "status_filter": status, "is_admin": True,
+    })
+
+
+@admin_required
+def admin_payment_detail(request: HttpRequest, payment_id: int):
+    payment = bot_db.get_payment(payment_id)
+    if not payment:
+        messages.error(request, "پرداخت پیدا نشد.")
+        return redirect("panel:admin_payments")
+
+    if request.method == "POST":
+        action = request.POST.get("action")
+        note = request.POST.get("note", "")
+        if action == "approve":
+            bot_db.approve_payment(payment_id, note)
+            messages.success(request, "پرداخت تأیید و موجودی شارژ شد.")
+        elif action == "reject":
+            bot_db.reject_payment(payment_id, note)
+            messages.warning(request, "پرداخت رد شد.")
+        return redirect("panel:admin_payments")
+
+    return render(request, "admin/payment_detail.html", {
+        "payment": payment, "is_admin": True,
+    })
+
+
+# ── Admin: Settings ───────────────────────────────────────────────────────────
+
+SETTINGS_META = {
+    "welcome_text":        {"label": "👋 متن خوش‌آمد",             "type": "textarea"},
+    "support_text":        {"label": "🆘 متن پشتیبانی",            "type": "textarea"},
+    "support_username":    {"label": "📱 یوزرنیم پشتیبان",         "type": "text"},
+    "trial_enabled":       {"label": "🎁 اکانت تست (1=فعال/0=غیر)", "type": "text"},
+    "trial_product_id":    {"label": "📦 ID محصول تست",             "type": "text"},
+    "trial_panel_id":      {"label": "🖥 ID پنل تست",               "type": "text"},
+    "trial_volume_gb":     {"label": "📊 حجم تست (GB)",             "type": "text"},
+    "trial_duration_days": {"label": "⏱ مدت تست (روز)",            "type": "text"},
+    "channel_required":    {"label": "🔒 کانال اجباری (ID)",        "type": "text"},
+    "channel_invite_link": {"label": "🔗 لینک دعوت کانال",          "type": "text"},
+    "min_deposit":         {"label": "💰 حداقل شارژ (تومان)",       "type": "text"},
+}
+
+
+@admin_required
+def admin_settings(request: HttpRequest):
+    current = bot_db.get_all_settings()
+
+    if request.method == "POST":
+        for key in SETTINGS_META:
+            if key in request.POST:
+                bot_db.set_setting(key, request.POST[key])
+        messages.success(request, "تنظیمات ذخیره شد.")
+        return redirect("panel:admin_settings")
+
+    fields = [
+        {"key": k, **meta, "value": current.get(k, "")}
+        for k, meta in SETTINGS_META.items()
+    ]
+    return render(request, "admin/settings.html", {
+        "fields": fields, "is_admin": True,
+    })
+
+
+# ── User: Services ────────────────────────────────────────────────────────────
+
+@login_required
+def user_services(request: HttpRequest):
+    tg_user = get_current_user(request)
+    db_user = bot_db.get_user_by_telegram_id(int(tg_user["id"]))
+    if not db_user:
+        messages.error(request, "حساب کاربری شما در ربات ثبت نشده. ابتدا ربات را استارت کنید.")
+        return redirect("panel:dashboard")
+    subscriptions = bot_db.get_user_subscriptions(db_user["id"])
+    return render(request, "user/services.html", {
+        "subscriptions": subscriptions, "db_user": db_user,
+        "tg_user": tg_user, "is_admin": is_admin(request),
+    })
+
+
+@login_required
+def user_buy(request: HttpRequest):
+    tg_user = get_current_user(request)
+    db_user = bot_db.get_user_by_telegram_id(int(tg_user["id"]))
+    products = bot_db.get_products(active_only=True)
+    return render(request, "user/buy.html", {
+        "products": products, "db_user": db_user,
+        "tg_user": tg_user, "is_admin": is_admin(request),
+    })
+
+
+@login_required
+def user_wallet(request: HttpRequest):
+    tg_user = get_current_user(request)
+    db_user = bot_db.get_user_by_telegram_id(int(tg_user["id"]))
+    card_number = bot_db.get_setting("card_number", "")
+    card_holder = bot_db.get_setting("card_holder", "")
+    min_deposit = int(bot_db.get_setting("min_deposit", "10000"))
+    return render(request, "user/wallet.html", {
+        "db_user": db_user, "tg_user": tg_user,
+        "card_number": card_number, "card_holder": card_holder,
+        "min_deposit": min_deposit, "is_admin": is_admin(request),
+    })
