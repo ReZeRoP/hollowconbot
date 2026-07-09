@@ -295,111 +295,8 @@ setup_webapp() {
     fi
 
     log "Setting up web panel..."
-
-    # Check webapp directory exists
-    if [[ ! -d "$WEBAPP_DIR" ]]; then
-        warn "webapp/ directory not found in $INSTALL_DIR. Skipping web panel."
-        SETUP_WEBAPP="no"
-        return
-    fi
-
-    # Virtual env for webapp
-    log "Creating web panel virtual environment..."
-    python3 -m venv "$WEBAPP_VENV" >> "$LOG_FILE" 2>&1
-    "$WEBAPP_VENV/bin/pip" install --upgrade pip --quiet >> "$LOG_FILE" 2>&1
-    "$WEBAPP_VENV/bin/pip" install -r "$WEBAPP_DIR/requirements.txt" --quiet >> "$LOG_FILE" 2>&1
-    success "Web panel packages installed."
-
-    # Generate Django secret key
-    DJANGO_SECRET=$(python3 -c "import secrets; print(secrets.token_urlsafe(50))")
-
-    # Write webapp .env
-    cat > "$WEBAPP_DIR/.env" << EOF
-DJANGO_SECRET_KEY=${DJANGO_SECRET}
-DJANGO_DEBUG=0
-DJANGO_ALLOWED_HOSTS=${WEB_DOMAIN},localhost,127.0.0.1
-BOT_TOKEN=${BOT_TOKEN}
-ADMIN_IDS=${ADMIN_IDS}
-BOT_DB_PATH=${INSTALL_DIR}/data/bot.db
-WEB_PATH=${WEB_PATH}
-WEB_PORT=${WEB_PORT}
-SSL_CERT=${SSL_CERT}
-SSL_KEY=${SSL_KEY}
-EOF
-    chmod 600 "$WEBAPP_DIR/.env"
-
-    # Build SSL args for gunicorn
-    SSL_ARGS=""
-    if [[ -n "$SSL_CERT" && -f "$SSL_CERT" && -n "$SSL_KEY" && -f "$SSL_KEY" ]]; then
-        SSL_ARGS="    --certfile \"${SSL_CERT}\" \\\\\n    --keyfile  \"${SSL_KEY}\" \\\\"
-    fi
-
-    # Create gunicorn startup script
-    cat > "$WEBAPP_DIR/start_webapp.sh" << STARTEOF
-#!/usr/bin/env bash
-set -a
-source "\$(dirname "\$0")/.env"
-set +a
-exec "\$(dirname "\$0")/.venv/bin/gunicorn" \\
-    --workers 2 \\
-    --bind "0.0.0.0:\${WEB_PORT:-8080}" \\
-    --access-logfile /var/log/bananabot-web-access.log \\
-    --error-logfile  /var/log/bananabot-web-error.log \\
-    bananabot_web.wsgi:application
-STARTEOF
-    chmod +x "$WEBAPP_DIR/start_webapp.sh"
-
-    # Inject SSL args into startup script if provided
-    if [[ -n "$SSL_ARGS" ]]; then
-        sed -i "s|bananabot_web.wsgi:application|--certfile \"${SSL_CERT}\" \\\\\n    --keyfile  \"${SSL_KEY}\" \\\\\n    bananabot_web.wsgi:application|" "$WEBAPP_DIR/start_webapp.sh"
-    fi
-
-    # Collect static files
-    log "Collecting static files..."
-    cd "$WEBAPP_DIR"
-    export DJANGO_SECRET_KEY="$DJANGO_SECRET"
-    export DJANGO_DEBUG=0
-    export DJANGO_ALLOWED_HOSTS="${WEB_DOMAIN},localhost"
-    export BOT_TOKEN="$BOT_TOKEN"
-    export ADMIN_IDS="$ADMIN_IDS"
-    export BOT_DB_PATH="${INSTALL_DIR}/data/bot.db"
-    export WEB_PATH="$WEB_PATH"
-    "$WEBAPP_VENV/bin/python" manage.py collectstatic --noinput >> "$LOG_FILE" 2>&1
-    "$WEBAPP_VENV/bin/python" manage.py migrate --run-syncdb >> "$LOG_FILE" 2>&1
-    cd "$INSTALL_DIR"
-    success "Static files collected."
-
-    # systemd service for webapp
-    log "Creating web panel systemd service..."
-    cat > "/etc/systemd/system/${WEBAPP_SERVICE}.service" << EOF
-[Unit]
-Description=BananaBot Web Panel
-After=network.target
-
-[Service]
-Type=simple
-WorkingDirectory=${WEBAPP_DIR}
-ExecStart=${WEBAPP_DIR}/start_webapp.sh
-Restart=always
-RestartSec=5
-StandardOutput=journal
-StandardError=journal
-SyslogIdentifier=${WEBAPP_SERVICE}
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-    systemctl daemon-reload
-    systemctl enable "$WEBAPP_SERVICE" >> "$LOG_FILE" 2>&1
-    systemctl start  "$WEBAPP_SERVICE"
-    sleep 2
-
-    if systemctl is-active --quiet "$WEBAPP_SERVICE"; then
-        success "Web panel started on port ${WEB_PORT}."
-    else
-        warn "Web panel failed to start. Check: journalctl -u ${WEBAPP_SERVICE} -n 50"
-    fi
+    source "$INSTALL_DIR/lib/webapp_lib.sh"
+    webapp_deploy || SETUP_WEBAPP="no"
 }
 
 start_bot() {
@@ -434,7 +331,7 @@ print_summary() {
 
     if [[ "$SETUP_WEBAPP" == "yes" ]]; then
         PROTO="http"
-        [[ -n "$SSL_CERT" ]] && PROTO="https"
+        [[ -n "$SSL_CERT" && -f "$SSL_CERT" ]] && PROTO="https"
         echo ""
         echo -e "  ${BOLD}Web Panel:${NC}"
         echo -e "    URL:    ${CYAN}${PROTO}://${WEB_DOMAIN}:${WEB_PORT}${WEB_PATH}/${NC}"
@@ -442,8 +339,17 @@ print_summary() {
         echo -e "    Start:  ${CYAN}systemctl start $WEBAPP_SERVICE${NC}"
         echo -e "    Logs:   ${CYAN}journalctl -u $WEBAPP_SERVICE -f${NC}"
         echo ""
-        echo -e "  ${YELLOW}NOTE: Login via Telegram Login Widget.${NC}"
-        echo -e "  ${YELLOW}Make sure bot username is set in @BotFather settings (domain).${NC}"
+        if [[ "$PROTO" == "https" ]]; then
+            echo -e "  ${YELLOW}To open the panel as a Telegram Mini App (button inside the bot):${NC}"
+            echo -e "  ${YELLOW}1. Open @BotFather → /mybots → your bot → Bot Settings → Menu Button /${NC}"
+            echo -e "  ${YELLOW}   Configure Menu Button, and set it to: ${CYAN}${PROTO}://${WEB_DOMAIN}:${WEB_PORT}${WEB_PATH}/${NC}"
+            echo -e "  ${YELLOW}   (BananaBot also sets this automatically on every bot restart.)${NC}"
+            echo -e "  ${YELLOW}2. For the browser \"Log in with Telegram\" button to also work,${NC}"
+            echo -e "  ${YELLOW}   set the same domain via @BotFather → /setdomain.${NC}"
+        else
+            echo -e "  ${RED}NOTE: No SSL configured — Telegram requires HTTPS for the in-chat${NC}"
+            echo -e "  ${RED}Mini App button, so it will stay hidden until you add SSL (manage.sh → Web Panel).${NC}"
+        fi
     fi
     echo ""
 }

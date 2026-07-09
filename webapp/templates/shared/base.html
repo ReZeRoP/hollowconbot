@@ -9,6 +9,7 @@
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css"/>
   {% load static %}
   <link rel="stylesheet" href="{% static 'css/main.css' %}"/>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
   {% block extra_head %}{% endblock %}
 </head>
 <body class="{% if is_admin %}role-admin{% else %}role-user{% endif %}">
@@ -119,6 +120,12 @@
 </div>
 
 <script src="{% static 'js/main.js' %}"></script>
+<script>
+  (function () {
+    var tg = window.Telegram && window.Telegram.WebApp;
+    if (tg) { tg.ready(); tg.expand(); }
+  })();
+</script>
 {% block extra_js %}{% endblock %}
 </body>
 </html>

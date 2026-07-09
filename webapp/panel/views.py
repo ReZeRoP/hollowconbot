@@ -3,15 +3,54 @@
 import json
 from django.shortcuts import render, redirect
 from django.http import JsonResponse, HttpRequest
+from django.urls import reverse
 from django.views.decorators.http import require_POST
+from django.views.decorators.csrf import csrf_exempt
 from django.conf import settings
 from django.contrib import messages
 
-from .auth import login_required, admin_required, verify_telegram_auth, get_current_user, is_admin
+from .auth import (
+    login_required,
+    admin_required,
+    verify_telegram_auth,
+    verify_webapp_init_data,
+    get_current_user,
+    is_admin,
+)
 from . import db as bot_db
 
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
+
+@csrf_exempt
+@require_POST
+def webapp_login(request: HttpRequest):
+    """Auto-login endpoint used by the Telegram Mini App front-end.
+
+    The page's JS reads `Telegram.WebApp.initData` and POSTs it here as JSON.
+    initData is already signed by Telegram, so this is exempt from Django's
+    CSRF check the same way an API token endpoint would be — the security
+    guarantee comes from the HMAC signature, not from the CSRF cookie.
+    """
+    try:
+        payload = json.loads(request.body or "{}")
+    except json.JSONDecodeError:
+        return JsonResponse({"ok": False, "error": "بدنه درخواست نامعتبر است."}, status=400)
+
+    init_data = payload.get("initData", "")
+    user = verify_webapp_init_data(init_data)
+    if not user:
+        return JsonResponse({"ok": False, "error": "اعتبارسنجی Telegram Mini App ناموفق بود."}, status=403)
+
+    request.session["tg_user"] = {
+        "id": str(user["id"]),
+        "first_name": user.get("first_name", ""),
+        "last_name": user.get("last_name", ""),
+        "username": user.get("username", ""),
+        "photo_url": user.get("photo_url", ""),
+    }
+    return JsonResponse({"ok": True, "redirect": reverse("panel:dashboard")})
+
 
 def login_view(request: HttpRequest):
     if request.session.get("tg_user"):

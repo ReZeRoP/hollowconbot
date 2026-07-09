@@ -1,8 +1,28 @@
 """Keyboard builders."""
 
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
+from aiogram.types import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    ReplyKeyboardMarkup,
+    KeyboardButton,
+    WebAppInfo,
+)
 
 from bot.messages import t
+from config import get_settings
+
+
+def _panel_button() -> KeyboardButton | None:
+    """Return a Web App keyboard button for the panel, if properly configured.
+
+    Telegram only allows web_app buttons to point to HTTPS URLs, so if the
+    admin only set up a plain-HTTP or IP-only panel, this returns None and the
+    button is silently omitted instead of crashing the bot.
+    """
+    panel_url = (get_settings().panel_url or "").strip()
+    if panel_url.startswith("https://"):
+        return KeyboardButton(text=t("web_panel"), web_app=WebAppInfo(url=panel_url))
+    return None
 
 
 def main_menu(is_admin: bool = False) -> ReplyKeyboardMarkup:
@@ -12,6 +32,9 @@ def main_menu(is_admin: bool = False) -> ReplyKeyboardMarkup:
         [KeyboardButton(text=t("deposit")), KeyboardButton(text=t("support"))],
         [KeyboardButton(text=t("faq")), KeyboardButton(text=t("tutorials"))],
     ]
+    panel_btn = _panel_button()
+    if panel_btn:
+        rows.append([panel_btn])
     if is_admin:
         rows.append([KeyboardButton(text=t("admin_menu"))])
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)

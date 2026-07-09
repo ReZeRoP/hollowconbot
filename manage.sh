@@ -61,9 +61,19 @@ set_env_value() {
 
 bot_status() {
     if systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
-        echo -e "  Status: ${GREEN}● Running${NC}"
+        echo -e "  Bot Status:        ${GREEN}● Running${NC}"
     else
-        echo -e "  Status: ${RED}● Stopped${NC}"
+        echo -e "  Bot Status:        ${RED}● Stopped${NC}"
+    fi
+}
+
+webapp_status_line() {
+    if systemctl is-active --quiet "$WEBAPP_SERVICE" 2>/dev/null; then
+        echo -e "  Web Panel Status:  ${GREEN}● Running${NC}"
+    elif [[ -f "$WEBAPP_ENV" ]]; then
+        echo -e "  Web Panel Status:  ${RED}● Stopped${NC}"
+    else
+        echo -e "  Web Panel Status:  ${YELLOW}● Not configured${NC}"
     fi
 }
 
@@ -75,6 +85,7 @@ print_header() {
     echo "  ╚══════════════════════════════════════════╝"
     echo -e "${NC}"
     bot_status
+    webapp_status_line
     echo ""
 }
 
@@ -98,6 +109,13 @@ main_menu() {
     echo -e "  ${BOLD}━━━ Advanced Operations ━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo "   [11] 🔄 Update Bot from GitHub"
     echo "   [12] 🗑️  Completely Remove Bot"
+    echo ""
+    echo -e "  ${BOLD}━━━ Web Panel (Telegram Mini App) ━━━━━━━━━━━━━${NC}"
+    echo "   [13] ℹ️  Web Panel Status & Info"
+    echo "   [14] ▶  Start Web Panel"
+    echo "   [15] ■  Stop Web Panel"
+    echo "   [16] ↺  Restart Web Panel"
+    echo "   [17] ⚙️  Setup / Reconfigure Web Panel (domain, port, path, SSL)"
     echo ""
     echo "   [0] 🚪 Exit"
     echo ""
@@ -272,6 +290,7 @@ action_show_config() {
     echo -e "  CARD_NUMBER:       ${CYAN}$(get_env_value 'CARD_NUMBER')${NC}"
     echo -e "  CARD_HOLDER:       ${CYAN}$(get_env_value 'CARD_HOLDER')${NC}"
     echo -e "  REQUIRED_CHANNEL:  ${CYAN}$(get_env_value 'REQUIRED_CHANNEL')${NC}"
+    echo -e "  PANEL_URL:         ${CYAN}$(get_env_value 'PANEL_URL')${NC}"
     echo ""
     read -rp "  Press Enter to return..."
 }
@@ -333,6 +352,164 @@ action_uninstall() {
 }
 
 # ------------------------------------------------------------
+webapp_lib_loaded="no"
+load_webapp_lib() {
+    if [[ "$webapp_lib_loaded" != "yes" ]]; then
+        # shellcheck source=/dev/null
+        source "$INSTALL_DIR/lib/webapp_lib.sh"
+        webapp_lib_loaded="yes"
+    fi
+}
+
+action_webapp_info() {
+    echo ""
+    echo -e "${BOLD}  ═══ Web Panel ═══${NC}"
+    echo ""
+    if [[ ! -f "$WEBAPP_ENV" ]]; then
+        warn "Web panel is not configured yet. Use option [17] to set it up."
+        echo ""
+        read -rp "  Press Enter to return..."
+        return
+    fi
+
+    load_webapp_lib
+    local domain port path_ cert
+    domain=$(webapp_get_env_value "WEB_DOMAIN")
+    port=$(webapp_get_env_value "WEB_PORT")
+    path_=$(webapp_get_env_value "WEB_PATH")
+    cert=$(webapp_get_env_value "SSL_CERT")
+    local proto="http"
+    [[ -n "$cert" && -f "$cert" ]] && proto="https"
+
+    echo -e "  Domain:     ${CYAN}${domain}${NC}"
+    echo -e "  Port:       ${CYAN}${port}${NC}"
+    echo -e "  Path:       ${CYAN}${path_}${NC}"
+    echo -e "  URL:        ${CYAN}${proto}://${domain}:${port}${path_}/${NC}"
+    echo -e "  SSL:        ${CYAN}$([[ "$proto" == "https" ]] && echo "Enabled" || echo "Disabled")${NC}"
+    echo -e "  PANEL_URL in bot .env: ${CYAN}$(get_env_value 'PANEL_URL')${NC}"
+    if [[ "$proto" != "https" ]]; then
+        warn "Telegram requires HTTPS for the in-chat Mini App button — it's hidden until SSL is set."
+    fi
+    echo ""
+    if systemctl is-active --quiet "$WEBAPP_SERVICE" 2>/dev/null; then
+        success "Service status: running"
+    else
+        error "Service status: stopped"
+    fi
+    echo ""
+    read -rp "  Press Enter to return..."
+}
+
+action_webapp_start() {
+    if [[ ! -f "$WEBAPP_ENV" ]]; then
+        warn "Web panel is not configured yet. Use option [17] to set it up first."
+        return
+    fi
+    log "Starting web panel..."
+    systemctl start "$WEBAPP_SERVICE"
+    sleep 1
+    if systemctl is-active --quiet "$WEBAPP_SERVICE"; then
+        success "Web panel started."
+    else
+        error "Web panel failed to start. Check: journalctl -u $WEBAPP_SERVICE -n 50"
+    fi
+}
+
+action_webapp_stop() {
+    if ! systemctl is-active --quiet "$WEBAPP_SERVICE" 2>/dev/null; then
+        warn "Web panel is already stopped."
+        return
+    fi
+    log "Stopping web panel..."
+    systemctl stop "$WEBAPP_SERVICE"
+    success "Web panel stopped."
+}
+
+action_webapp_restart() {
+    if [[ ! -f "$WEBAPP_ENV" ]]; then
+        warn "Web panel is not configured yet. Use option [17] to set it up first."
+        return
+    fi
+    log "Restarting web panel..."
+    systemctl restart "$WEBAPP_SERVICE"
+    sleep 1
+    if systemctl is-active --quiet "$WEBAPP_SERVICE"; then
+        success "Web panel restarted."
+    else
+        error "Web panel failed to start after restart. Check: journalctl -u $WEBAPP_SERVICE -n 50"
+    fi
+}
+
+action_webapp_configure() {
+    load_webapp_lib
+    echo ""
+    echo -e "${BOLD}  ═══ Web Panel Setup / Reconfigure ═══${NC}"
+    echo ""
+
+    local cur_domain cur_port cur_path cur_cert cur_key
+    cur_domain=$(webapp_get_env_value "WEB_DOMAIN")
+    cur_port=$(webapp_get_env_value "WEB_PORT"); cur_port="${cur_port:-8080}"
+    cur_path=$(webapp_get_env_value "WEB_PATH"); cur_path="${cur_path:-/panel}"
+    cur_cert=$(webapp_get_env_value "SSL_CERT")
+    cur_key=$(webapp_get_env_value "SSL_KEY")
+
+    echo -e "${CYAN}Domain or IP for the web panel [current: ${cur_domain:-none}]:${NC}"
+    read -rp "  DOMAIN: " WEB_DOMAIN
+    WEB_DOMAIN="${WEB_DOMAIN// /}"
+    WEB_DOMAIN="${WEB_DOMAIN:-$cur_domain}"
+    if [[ -z "$WEB_DOMAIN" ]]; then
+        warn "A domain/IP is required. Cancelled."
+        return
+    fi
+
+    echo -e "${CYAN}Port [current: ${cur_port}]:${NC}"
+    read -rp "  PORT: " WEB_PORT
+    WEB_PORT="${WEB_PORT// /}"
+    WEB_PORT="${WEB_PORT:-$cur_port}"
+
+    echo -e "${CYAN}URL path [current: ${cur_path}]:${NC}"
+    read -rp "  WEB_PATH: " WEB_PATH
+    WEB_PATH="${WEB_PATH// /}"
+    WEB_PATH="${WEB_PATH:-$cur_path}"
+    [[ "${WEB_PATH:0:1}" != "/" ]] && WEB_PATH="/${WEB_PATH}"
+
+    echo -e "${CYAN}SSL certificate path (Enter to keep current: ${cur_cert:-none}):${NC}"
+    read -rp "  SSL_CERT: " SSL_CERT
+    SSL_CERT="${SSL_CERT// /}"
+    SSL_CERT="${SSL_CERT:-$cur_cert}"
+
+    if [[ -n "$SSL_CERT" ]]; then
+        echo -e "${CYAN}SSL private key path (Enter to keep current: ${cur_key:-none}):${NC}"
+        read -rp "  SSL_KEY: " SSL_KEY
+        SSL_KEY="${SSL_KEY// /}"
+        SSL_KEY="${SSL_KEY:-$cur_key}"
+    else
+        SSL_KEY=""
+    fi
+
+    if [[ -n "$SSL_CERT" && ! -f "$SSL_CERT" ]]; then
+        warn "Certificate file not found at that path — continuing without SSL for now."
+        SSL_CERT=""
+        SSL_KEY=""
+    fi
+
+    # webapp_deploy (from lib) needs these bot-side values too.
+    BOT_TOKEN=$(get_env_value "BOT_TOKEN")
+    ADMIN_IDS=$(get_env_value "ADMIN_IDS")
+
+    echo ""
+    webapp_deploy
+    echo ""
+    echo -n "  Restart the bot now so it picks up the new panel URL? [y/N]: "
+    read -r RESTART_CHOICE
+    if [[ "$RESTART_CHOICE" =~ ^[yY]$ ]]; then
+        action_restart
+    fi
+    echo ""
+    read -rp "  Press Enter to return..."
+}
+
+# ------------------------------------------------------------
 run() {
     check_root
     check_installed
@@ -355,11 +532,16 @@ run() {
             10) action_show_config ;;
             11) action_update ;;
             12) action_uninstall ;;
+            13) action_webapp_info ;;
+            14) action_webapp_start ;;
+            15) action_webapp_stop ;;
+            16) action_webapp_restart ;;
+            17) action_webapp_configure ;;
             0)  echo "Goodbye! 👋"; exit 0 ;;
             *)  warn "Invalid selection." ;;
         esac
 
-        if [[ "$CHOICE" != "4" && "$CHOICE" != "5" && "$CHOICE" != "10" ]]; then
+        if [[ "$CHOICE" != "4" && "$CHOICE" != "5" && "$CHOICE" != "10" && "$CHOICE" != "13" && "$CHOICE" != "17" ]]; then
             echo ""
             read -rp "  Press Enter to return to menu..."
         fi

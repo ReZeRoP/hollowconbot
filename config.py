@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     card_number: str = ""
     card_holder: str = ""
     required_channel: str = ""
+    panel_url: str = ""
 
     @field_validator("admin_ids", mode="before")
     @classmethod

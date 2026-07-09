@@ -28,6 +28,7 @@ MIDDLEWARE = [
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
+    "panel.middleware.TelegramEmbedMiddleware",
 ]
 
 ROOT_URLCONF = "bananabot_web.urls"
@@ -81,6 +82,24 @@ SESSION_ENGINE = "django.contrib.sessions.backends.db"
 SESSION_COOKIE_AGE = 86400 * 7   # 7 days
 SESSION_COOKIE_SECURE = not DEBUG
 CSRF_COOKIE_SECURE = not DEBUG
+
+# Telegram shows this panel inside its own page (Mini App webview / embedded
+# frame on desktop clients), which browsers treat as a cross-site/third-party
+# context. Cookies default to SameSite=Lax, which browsers silently refuse to
+# send back in that context — the session looks like it "logs in" once, then
+# instantly appears logged out. SameSite=None (with Secure, already required
+# for HTTPS) fixes this. This has no effect when DEBUG=1 / running over plain
+# HTTP for local testing, since Secure cookies aren't sent over HTTP anyway.
+if not DEBUG:
+    SESSION_COOKIE_SAMESITE = "None"
+    CSRF_COOKIE_SAMESITE = "None"
+
+# Needed for Django's CSRF check to accept POSTs (e.g. the settings forms)
+# once the panel is reachable at a real domain instead of only "*".
+_web_domain = os.environ.get("WEB_DOMAIN", "").strip()
+CSRF_TRUSTED_ORIGINS = []
+if _web_domain:
+    CSRF_TRUSTED_ORIGINS = [f"https://{_web_domain}", f"http://{_web_domain}"]
 
 # Telegram Bot token (read from bot's .env for OTP verification)
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
