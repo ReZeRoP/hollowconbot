@@ -1,171 +1,14 @@
+import asyncio
 import json
+import logging
 
 import aiosqlite
 from pathlib import Path
 
 from config import get_settings
+from db_schema import DEFAULT_SETTINGS, reconcile  # noqa: F401 (DEFAULT_SETTINGS kept for anything importing it from here)
 
-
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS users (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    telegram_id INTEGER UNIQUE NOT NULL,
-    username TEXT,
-    full_name TEXT,
-    phone TEXT,
-    balance INTEGER DEFAULT 0,
-    is_banned INTEGER DEFAULT 0,
-    created_at TEXT DEFAULT (datetime('now'))
-);
-
-CREATE TABLE IF NOT EXISTS panels (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL,
-    url TEXT NOT NULL,
-    api_token TEXT NOT NULL,
-    inbound_ids TEXT NOT NULL DEFAULT '[]',
-    sub_link_template TEXT DEFAULT '',
-    on_hold INTEGER DEFAULT 0,
-    is_active INTEGER DEFAULT 1,
-    created_at TEXT DEFAULT (datetime('now'))
-);
-
-CREATE TABLE IF NOT EXISTS products (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL,
-    panel_id INTEGER NOT NULL,
-    volume_gb REAL NOT NULL,
-    duration_days INTEGER NOT NULL,
-    price INTEGER NOT NULL,
-    is_trial INTEGER DEFAULT 0,
-    is_active INTEGER DEFAULT 1,
-    description TEXT DEFAULT '',
-    created_at TEXT DEFAULT (datetime('now')),
-    FOREIGN KEY (panel_id) REFERENCES panels(id)
-);
-
-CREATE TABLE IF NOT EXISTS subscriptions (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER NOT NULL,
-    product_id INTEGER,
-    panel_id INTEGER NOT NULL,
-    email TEXT NOT NULL,
-    sub_id TEXT,
-    volume_gb REAL NOT NULL,
-    expiry_time INTEGER DEFAULT 0,
-    config_link TEXT,
-    config_links TEXT DEFAULT '[]',
-    sub_link TEXT,
-    status TEXT DEFAULT 'active',
-    is_trial INTEGER DEFAULT 0,
-    created_at TEXT DEFAULT (datetime('now')),
-    FOREIGN KEY (user_id) REFERENCES users(id),
-    FOREIGN KEY (product_id) REFERENCES products(id),
-    FOREIGN KEY (panel_id) REFERENCES panels(id)
-);
-
-CREATE TABLE IF NOT EXISTS orders (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER NOT NULL,
-    product_id INTEGER,
-    order_code TEXT UNIQUE NOT NULL,
-    amount INTEGER NOT NULL,
-    status TEXT DEFAULT 'pending',
-    payment_method TEXT DEFAULT 'balance',
-    description TEXT,
-    created_at TEXT DEFAULT (datetime('now')),
-    FOREIGN KEY (user_id) REFERENCES users(id),
-    FOREIGN KEY (product_id) REFERENCES products(id)
-);
-
-CREATE TABLE IF NOT EXISTS payments (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER NOT NULL,
-    order_id INTEGER,
-    product_id INTEGER,
-    renew_sub_id INTEGER,
-    amount INTEGER NOT NULL,
-    status TEXT DEFAULT 'pending',
-    payment_method TEXT DEFAULT 'card',
-    receipt_file_id TEXT,
-    admin_note TEXT,
-    handled_by INTEGER,
-    notif_chats TEXT DEFAULT '[]',
-    created_at TEXT DEFAULT (datetime('now')),
-    FOREIGN KEY (user_id) REFERENCES users(id),
-    FOREIGN KEY (order_id) REFERENCES orders(id)
-);
-
-CREATE TABLE IF NOT EXISTS coupons (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    code TEXT UNIQUE NOT NULL,
-    discount_type TEXT NOT NULL DEFAULT 'percent',
-    discount_value INTEGER NOT NULL,
-    usage_type TEXT NOT NULL DEFAULT 'unlimited',
-    max_uses INTEGER DEFAULT 0,
-    used_count INTEGER DEFAULT 0,
-    is_active INTEGER DEFAULT 1,
-    expires_at TEXT DEFAULT NULL,
-    created_at TEXT DEFAULT (datetime('now'))
-);
-
-CREATE TABLE IF NOT EXISTS coupon_uses (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    coupon_id INTEGER NOT NULL,
-    user_id INTEGER NOT NULL,
-    used_at TEXT DEFAULT (datetime('now')),
-    FOREIGN KEY (coupon_id) REFERENCES coupons(id),
-    FOREIGN KEY (user_id) REFERENCES users(id)
-);
-
-CREATE TABLE IF NOT EXISTS settings (
-    key TEXT PRIMARY KEY,
-    value TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS faq (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    question TEXT NOT NULL,
-    answer TEXT NOT NULL,
-    sort_order INTEGER DEFAULT 0
-);
-
-CREATE TABLE IF NOT EXISTS tutorials (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    title TEXT NOT NULL,
-    content TEXT NOT NULL,
-    sort_order INTEGER DEFAULT 0
-);
-"""
-
-
-DEFAULT_SETTINGS = {
-    "welcome_text": "سلام! به ربات فروش VPN خوش آمدید.",
-    "support_text": "برای پشتیبانی با ادمین تماس بگیرید.",
-    "support_username": "",
-    "trial_enabled": "1",
-    "trial_product_id": "0",
-    "trial_panel_id": "",
-    "trial_volume_gb": "1",
-    "trial_duration_days": "1",
-    "channel_required": "",
-    "channel_invite_link": "",
-    "min_deposit": "10000",
-}
-
-# Lightweight migrations applied to existing databases created before these
-# columns existed. Safe to re-run: duplicate-column errors are ignored.
-MIGRATIONS = [
-    "ALTER TABLE subscriptions ADD COLUMN config_links TEXT DEFAULT '[]'",
-    "ALTER TABLE payments ADD COLUMN product_id INTEGER",
-    "ALTER TABLE panels ADD COLUMN sub_link_template TEXT DEFAULT ''",
-    "ALTER TABLE users ADD COLUMN is_banned INTEGER DEFAULT 0",
-    "ALTER TABLE payments ADD COLUMN handled_by INTEGER",
-    "ALTER TABLE payments ADD COLUMN notif_chats TEXT DEFAULT '[]'",
-    "ALTER TABLE payments ADD COLUMN renew_sub_id INTEGER",
-    "ALTER TABLE payments ADD COLUMN coupon_code TEXT DEFAULT NULL",
-    "ALTER TABLE payments ADD COLUMN discount_amount INTEGER DEFAULT 0",
-]
+logger = logging.getLogger(__name__)
 
 
 class Database:
@@ -181,22 +24,18 @@ class Database:
         return conn
 
     async def init(self):
-        conn = await self.connect()
-        try:
-            await conn.executescript(SCHEMA)
-            for stmt in MIGRATIONS:
-                try:
-                    await conn.execute(stmt)
-                except aiosqlite.OperationalError:
-                    pass  # column already exists on a fresh/up-to-date database
-            for key, value in DEFAULT_SETTINGS.items():
-                await conn.execute(
-                    "INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)",
-                    (key, value),
-                )
-            await conn.commit()
-        finally:
-            await conn.close()
+        # reconcile() is plain sync sqlite3 (see db_schema.py for why), so
+        # it's run in a worker thread to avoid blocking the event loop.
+        # It creates any missing tables/columns — including ones added in
+        # a newer version of the code than whatever data/bot.db currently
+        # has (e.g. right after restoring an older backup) — so the bot
+        # never crashes on a stale schema.
+        report = await asyncio.to_thread(reconcile, self.path)
+        if report["tables_created"] or report["columns_added"]:
+            logger.info(
+                "Database schema updated — tables created: %s, columns added: %s",
+                report["tables_created"], report["columns_added"],
+            )
 
     async def _fetchone(self, query: str, params: tuple = ()) -> dict | None:
         conn = await self.connect()

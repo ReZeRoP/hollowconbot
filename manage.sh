@@ -13,6 +13,8 @@ SERVICE_NAME="bananabot"
 WEBAPP_SERVICE="bananabot-web"
 ENV_FILE="$INSTALL_DIR/.env"
 WEBAPP_ENV="$WEBAPP_DIR/.env"
+DB_PATH="$INSTALL_DIR/data/bot.db"
+BACKUP_DIR="$INSTALL_DIR/data/backups"
 
 # ------------------------------------------------------------
 RED='\033[0;31m'
@@ -109,6 +111,11 @@ main_menu() {
     echo -e "  ${BOLD}━━━ Advanced Operations ━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo "   [11] 🔄 Update Bot from GitHub"
     echo "   [12] 🗑️  Completely Remove Bot"
+    echo ""
+    echo -e "  ${BOLD}━━━ Database ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo "   [18] 💾 Backup Database"
+    echo "   [19] ♻️  Restore Database from Backup"
+    echo "   [20] 🩺 Check / Repair Database Schema"
     echo ""
     echo -e "  ${BOLD}━━━ Web Panel (Telegram Mini App) ━━━━━━━━━━━━━${NC}"
     echo "   [13] ℹ️  Web Panel Status & Info"
@@ -378,6 +385,137 @@ action_uninstall() {
 }
 
 # ------------------------------------------------------------
+# Runs a single sqlite3 ".backup" (a proper hot-backup: safe even while the
+# bot has the DB open, unlike a plain file copy which could grab it
+# mid-write) if the sqlite3 CLI is available, otherwise falls back to cp.
+_sqlite_backup_file() {
+    local src="$1" dest="$2"
+    if command -v sqlite3 >/dev/null 2>&1; then
+        sqlite3 "$src" ".backup '$dest'"
+    else
+        cp "$src" "$dest"
+    fi
+}
+
+action_backup_db() {
+    echo ""
+    if [[ ! -f "$DB_PATH" ]]; then
+        error "No database found at $DB_PATH yet."
+        return
+    fi
+    mkdir -p "$BACKUP_DIR"
+    local ts dest
+    ts=$(date +%Y%m%d_%H%M%S)
+    dest="$BACKUP_DIR/bot_${ts}.db"
+
+    log "Backing up database..."
+    if _sqlite_backup_file "$DB_PATH" "$dest"; then
+        success "Backup saved: $dest ($(du -h "$dest" | cut -f1))"
+    else
+        error "Backup failed."
+        return
+    fi
+
+    # Keep the last 15 backups only, so this directory doesn't grow forever.
+    local count
+    count=$(ls -1 "$BACKUP_DIR"/bot_*.db 2>/dev/null | wc -l)
+    if [[ "$count" -gt 15 ]]; then
+        ls -1t "$BACKUP_DIR"/bot_*.db | tail -n +16 | xargs -r rm -f
+        log "Older backups trimmed (keeping the 15 most recent)."
+    fi
+}
+
+action_restore_db() {
+    echo ""
+    mkdir -p "$BACKUP_DIR"
+    local backups=()
+    while IFS= read -r f; do backups+=("$f"); done < <(ls -1t "$BACKUP_DIR"/bot_*.db 2>/dev/null)
+
+    if [[ ${#backups[@]} -eq 0 ]]; then
+        warn "No backups found in $BACKUP_DIR yet. Use 'Backup Database' first,"
+        warn "or copy an older bot.db file into that folder before restoring."
+        return
+    fi
+
+    echo -e "  ${BOLD}Available backups:${NC}"
+    local i=1
+    for f in "${backups[@]}"; do
+        echo "   [$i] $(basename "$f")  ($(du -h "$f" | cut -f1))"
+        i=$((i+1))
+    done
+    echo ""
+    echo -n "  Select a backup to restore (0 to cancel): "
+    read -r SEL
+    if [[ ! "$SEL" =~ ^[0-9]+$ ]] || [[ "$SEL" -lt 1 ]] || [[ "$SEL" -gt ${#backups[@]} ]]; then
+        warn "Cancelled."
+        return
+    fi
+    local chosen="${backups[$((SEL-1))]}"
+
+    echo ""
+    warn "This will REPLACE the current database with: $(basename "$chosen")"
+    warn "A safety copy of the CURRENT database is taken first, just in case."
+    echo -n "  Type 'RESTORE' to confirm: "
+    read -r CONFIRM_TEXT
+    if [[ "$CONFIRM_TEXT" != "RESTORE" ]]; then
+        warn "Cancelled."
+        return
+    fi
+
+    local bot_was_running=0 web_was_running=0
+    if systemctl is-active --quiet "$SERVICE_NAME"; then
+        bot_was_running=1
+        log "Stopping bot..."
+        systemctl stop "$SERVICE_NAME"
+    fi
+    if systemctl is-active --quiet "$WEBAPP_SERVICE" 2>/dev/null; then
+        web_was_running=1
+        log "Stopping web panel..."
+        systemctl stop "$WEBAPP_SERVICE"
+    fi
+
+    if [[ -f "$DB_PATH" ]]; then
+        mkdir -p "$BACKUP_DIR"
+        local safety_ts safety_dest
+        safety_ts=$(date +%Y%m%d_%H%M%S)
+        safety_dest="$BACKUP_DIR/bot_${safety_ts}_before-restore.db"
+        _sqlite_backup_file "$DB_PATH" "$safety_dest" \
+            && log "Current database saved to: $safety_dest"
+    fi
+
+    log "Restoring $(basename "$chosen")..."
+    cp "$chosen" "$DB_PATH"
+    success "Database file restored."
+
+    # This is the step that matters most: the backup may be from an older
+    # version of the bot, so its schema could be missing tables/columns
+    # the CURRENT code expects. Reconcile brings it up to date automatically.
+    log "Checking/repairing database schema against the current code..."
+    "$INSTALL_DIR/.venv/bin/python" "$INSTALL_DIR/db_schema.py" "$DB_PATH"
+
+    if [[ "$bot_was_running" -eq 1 ]]; then
+        log "Starting bot..."
+        systemctl start "$SERVICE_NAME"
+    fi
+    if [[ "$web_was_running" -eq 1 ]]; then
+        log "Starting web panel..."
+        systemctl start "$WEBAPP_SERVICE"
+    fi
+    success "Restore complete."
+}
+
+action_check_db_schema() {
+    echo ""
+    if [[ ! -f "$DB_PATH" ]]; then
+        error "No database found at $DB_PATH yet."
+        return
+    fi
+    log "Checking database schema against the current code..."
+    "$INSTALL_DIR/.venv/bin/python" "$INSTALL_DIR/db_schema.py" "$DB_PATH"
+    success "Done. Safe to run any time — e.g. right after 'Update Bot from GitHub'."
+}
+
+# ------------------------------------------------------------
 webapp_lib_loaded="no"
 load_webapp_lib() {
     if [[ "$webapp_lib_loaded" != "yes" ]]; then
@@ -558,6 +696,9 @@ run() {
             10) action_show_config ;;
             11) action_update ;;
             12) action_uninstall ;;
+            18) action_backup_db ;;
+            19) action_restore_db ;;
+            20) action_check_db_schema ;;
             13) action_webapp_info ;;
             14) action_webapp_start ;;
             15) action_webapp_stop ;;
