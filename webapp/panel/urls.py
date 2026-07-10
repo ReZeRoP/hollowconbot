@@ -21,6 +21,7 @@ urlpatterns = [
     # Admin — users
     path("admin/users/",                      views.admin_users,       name="admin_users"),
     path("admin/users/<int:telegram_id>/",    views.admin_user_detail, name="admin_user_detail"),
+    path("admin/subscriptions/<int:sub_id>/delete/", views.admin_subscription_delete, name="admin_subscription_delete"),
 
     # Admin — products
     path("admin/products/",               views.admin_products,      name="admin_products"),

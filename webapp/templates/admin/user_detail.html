@@ -72,7 +72,7 @@
   {% if subscriptions %}
   <table class="table">
     <thead>
-      <tr><th>ID</th><th>محصول</th><th>پنل</th><th>ایمیل</th><th>وضعیت</th><th>تاریخ</th></tr>
+      <tr><th>ID</th><th>محصول</th><th>پنل</th><th>ایمیل</th><th>وضعیت</th><th>تاریخ</th><th>عملیات</th></tr>
     </thead>
     <tbody>
       {% for s in subscriptions %}
@@ -86,6 +86,15 @@
           {% else %}<span class="badge-red">{{ s.status }}</span>{% endif %}
         </td>
         <td><small>{{ s.created_at }}</small></td>
+        <td>
+          {% if s.status == "active" %}
+          <form method="post" action="{% url 'panel:admin_subscription_delete' s.id %}"
+                onsubmit="return confirm('این سرویس هم از پنل x-ui و هم از دیتابیس حذف می‌شود. ادامه می‌دهید؟')">
+            {% csrf_token %}
+            <button type="submit" class="btn btn-sm btn-danger"><i class="fa fa-trash"></i> حذف</button>
+          </form>
+          {% else %}—{% endif %}
+        </td>
       </tr>
       {% endfor %}
     </tbody>

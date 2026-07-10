@@ -221,6 +221,28 @@ def get_active_subscriptions_count() -> int:
         ).fetchone()[0]
 
 
+def get_subscription(sub_id: int) -> dict | None:
+    """Mirrors database/db.py's async get_subscription join, so the panel
+    has everything needed (panel url/token, client email) to delete the
+    client on the actual x-ui panel, not just in our own DB."""
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT s.*, u.telegram_id, u.full_name, "
+            "pn.name as panel_name, pn.url as panel_url, pn.api_token "
+            "FROM subscriptions s "
+            "JOIN users u ON s.user_id = u.id "
+            "JOIN panels pn ON s.panel_id = pn.id "
+            "WHERE s.id = ?",
+            (sub_id,),
+        ).fetchone()
+    return row_to_dict(row)
+
+
+def delete_subscription_record(sub_id: int):
+    with get_conn() as conn:
+        conn.execute("UPDATE subscriptions SET status='deleted' WHERE id=?", (sub_id,))
+
+
 # ── Payments ──────────────────────────────────────────────────────────────────
 
 def get_pending_payments() -> list[dict]:
@@ -357,7 +379,7 @@ def get_orders_page(page: int, per_page: int = 20) -> tuple[list[dict], int]:
 
 def get_revenue_stats() -> dict:
     with get_conn() as conn:
-        total = conn.execute(
+        computed_total = conn.execute(
             "SELECT COALESCE(SUM(amount),0) FROM payments WHERE status='approved'"
         ).fetchone()[0]
         today = conn.execute(
@@ -367,4 +389,15 @@ def get_revenue_stats() -> dict:
         pending_count = conn.execute(
             "SELECT COUNT(*) FROM payments WHERE status='pending'"
         ).fetchone()[0]
-    return {"total": total, "today": today, "pending_count": pending_count}
+        adj_row = conn.execute("SELECT value FROM settings WHERE key='revenue_adjustment'").fetchone()
+    try:
+        adjustment = int(adj_row["value"]) if adj_row and adj_row["value"] else 0
+    except (TypeError, ValueError):
+        adjustment = 0
+    return {
+        "total": computed_total + adjustment,
+        "today": today,
+        "pending_count": pending_count,
+        "computed_total": computed_total,
+        "adjustment": adjustment,
+    }

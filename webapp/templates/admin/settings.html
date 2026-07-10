@@ -3,6 +3,32 @@
 {% block page_title %}تنظیمات ربات{% endblock %}
 {% block nav_settings %}active{% endblock %}
 {% block content %}
+<div class="card mb-3" style="max-width:700px">
+  <h2 class="card-title"><i class="fa fa-sack-dollar"></i> ویرایش دستی کل درآمد</h2>
+  <p class="wallet-note">
+    <i class="fa fa-info-circle"></i>
+    درآمد محاسبه‌شده از تراکنش‌های تأییدشده: <strong>{{ revenue.computed_total|floatformat:0 }}</strong> تومان
+    {% if revenue.adjustment %}
+      (+ تعدیل دستی {{ revenue.adjustment|floatformat:0 }} تومان)
+    {% endif %}
+    — کل نمایش داده‌شده در داشبورد: <strong class="text-green">{{ revenue.total|floatformat:0 }}</strong> تومان
+  </p>
+  <form method="post" class="mt-2">
+    {% csrf_token %}
+    <input type="hidden" name="action" value="set_revenue"/>
+    <div class="form-group">
+      <label>مقدار جدید کل درآمد (تومان)</label>
+      <div class="input-group">
+        <input type="number" name="revenue_total" value="{{ revenue.total|floatformat:0 }}" class="input"/>
+        <button type="submit" class="btn btn-primary"><i class="fa fa-save"></i> ثبت</button>
+      </div>
+      <small>
+        این مقدار روی داشبورد به‌عنوان «کل درآمد» نمایش داده می‌شود و از این پس با تأیید پرداخت‌های جدید هم به‌روز می‌ماند.
+      </small>
+    </div>
+  </form>
+</div>
+
 <div class="card" style="max-width:700px">
   <h2 class="card-title"><i class="fa fa-gear"></i> تنظیمات ربات</h2>
   <form method="post">

@@ -19,6 +19,7 @@ from .auth import (
 )
 from . import db as bot_db
 from . import telegram_api
+from . import xui_client
 
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
@@ -176,6 +177,43 @@ def admin_user_detail(request: HttpRequest, telegram_id: int):
     return render(request, "admin/user_detail.html", {
         "u": user, "subscriptions": subscriptions, "is_admin": True,
     })
+
+
+@admin_required
+@require_POST
+def admin_subscription_delete(request: HttpRequest, sub_id: int):
+    sub = bot_db.get_subscription(sub_id)
+    if not sub:
+        messages.error(request, "سرویس پیدا نشد.")
+        return redirect("panel:admin_users")
+
+    if sub["status"] == "deleted":
+        messages.warning(request, "این سرویس قبلاً حذف شده بود.")
+        return redirect("panel:admin_user_detail", telegram_id=sub["telegram_id"])
+
+    panel_ok = xui_client.delete_client(sub["panel_url"], sub["api_token"], sub["email"])
+    # Same behavior as the bot's own delete_subscription: always mark it
+    # deleted in our DB even if the panel call failed (e.g. panel offline,
+    # client already gone there) — an admin who chose to delete a service
+    # doesn't want it stuck "active" in the panel forever because of a
+    # transient network error.
+    bot_db.delete_subscription_record(sub_id)
+
+    if sub.get("telegram_id"):
+        telegram_api.send_message(
+            int(sub["telegram_id"]),
+            f"❌ سرویس شما ({sub['email']}) توسط ادمین حذف شد.",
+        )
+
+    if panel_ok:
+        messages.success(request, "سرویس از پنل و دیتابیس حذف شد. به کاربر اطلاع داده شد.")
+    else:
+        messages.warning(
+            request,
+            "سرویس در دیتابیس حذف شد، اما حذف آن از پنل x-ui ناموفق بود "
+            "(ممکن است پنل در دسترس نباشد یا کلاینت از قبل حذف شده باشد).",
+        )
+    return redirect("panel:admin_user_detail", telegram_id=sub["telegram_id"])
 
 
 # ── Admin: Products ───────────────────────────────────────────────────────────
@@ -428,8 +466,24 @@ SETTINGS_META = {
 @admin_required
 def admin_settings(request: HttpRequest):
     current = bot_db.get_all_settings()
+    revenue = bot_db.get_revenue_stats()
 
     if request.method == "POST":
+        if request.POST.get("action") == "set_revenue":
+            try:
+                desired_total = int(request.POST.get("revenue_total", ""))
+            except ValueError:
+                messages.error(request, "مقدار وارد شده برای کل درآمد نامعتبر است.")
+                return redirect("panel:admin_settings")
+            # Store the DIFFERENCE from what's actually computed from approved
+            # payments, not the raw number — so "کل درآمد" keeps growing
+            # correctly as new payments get approved afterward, instead of
+            # freezing at whatever the admin typed.
+            new_adjustment = desired_total - revenue["computed_total"]
+            bot_db.set_setting("revenue_adjustment", str(new_adjustment))
+            messages.success(request, "مقدار کل درآمد به‌روزرسانی شد.")
+            return redirect("panel:admin_settings")
+
         for key in SETTINGS_META:
             if key in request.POST:
                 bot_db.set_setting(key, request.POST[key])
@@ -441,7 +495,7 @@ def admin_settings(request: HttpRequest):
         for k, meta in SETTINGS_META.items()
     ]
     return render(request, "admin/settings.html", {
-        "fields": fields, "is_admin": True,
+        "fields": fields, "is_admin": True, "revenue": revenue,
     })
 
 
