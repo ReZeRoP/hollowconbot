@@ -546,17 +546,44 @@ action_webapp_info() {
     port=$(webapp_get_env_value "WEB_PORT")
     path_=$(webapp_get_env_value "WEB_PATH")
     cert=$(webapp_get_env_value "SSL_CERT")
+    key=$(webapp_get_env_value "SSL_KEY")
     local proto="http"
-    [[ -n "$cert" && -f "$cert" ]] && proto="https"
+    if [[ -n "$cert" && -f "$cert" && -n "$key" && -f "$key" ]]; then
+        proto="https"
+    fi
+
+    # Clean URL (omit default ports)
+    local hostport="${domain}"
+    if [[ -n "$port" ]]; then
+        if [[ "$proto" == "https" && "$port" != "443" ]] || [[ "$proto" == "http" && "$port" != "80" ]]; then
+            hostport="${domain}:${port}"
+        fi
+    fi
+    local path_clean="${path_:-/panel}"
+    [[ "${path_clean:0:1}" != "/" ]] && path_clean="/${path_clean}"
+    path_clean="${path_clean%/}"
 
     echo -e "  Domain:     ${CYAN}${domain}${NC}"
     echo -e "  Port:       ${CYAN}${port}${NC}"
-    echo -e "  Path:       ${CYAN}${path_}${NC}"
-    echo -e "  URL:        ${CYAN}${proto}://${domain}:${port}${path_}/${NC}"
+    echo -e "  Path:       ${CYAN}${path_clean}${NC}"
+    echo -e "  URL:        ${CYAN}${proto}://${hostport}${path_clean}/${NC}"
     echo -e "  SSL:        ${CYAN}$([[ "$proto" == "https" ]] && echo "Enabled" || echo "Disabled")${NC}"
+    echo -e "  SSL_CERT:   ${CYAN}${cert:-none}${NC}"
+    echo -e "  SSL_KEY:    ${CYAN}${key:-none}${NC}"
+    if [[ -n "$cert" && ! -f "$cert" ]]; then
+        warn "SSL_CERT path does not exist: $cert"
+    fi
+    if [[ -n "$key" && ! -f "$key" ]]; then
+        warn "SSL_KEY path does not exist: $key"
+    fi
     echo -e "  PANEL_URL in bot .env: ${CYAN}$(get_env_value 'PANEL_URL')${NC}"
     if [[ "$proto" != "https" ]]; then
         warn "Telegram requires HTTPS for the in-chat Mini App button — it's hidden until SSL is set."
+    else
+        if command -v openssl >/dev/null 2>&1 && [[ -f "$cert" ]]; then
+            echo -e "  Cert ends:  ${CYAN}$(openssl x509 -in "$cert" -noout -enddate 2>/dev/null | cut -d= -f2-)${NC}"
+            echo -e "  Cert subj:  ${CYAN}$(openssl x509 -in "$cert" -noout -subject 2>/dev/null)${NC}"
+        fi
     fi
     echo ""
     if systemctl is-active --quiet "$WEBAPP_SERVICE" 2>/dev/null; then
@@ -655,24 +682,30 @@ action_webapp_configure() {
         SSL_KEY=""
     fi
 
-    if [[ -n "$SSL_CERT" && ! -f "$SSL_CERT" ]]; then
-        warn "Certificate file not found at that path — continuing without SSL for now."
-        SSL_CERT=""
-        SSL_KEY=""
+    # Prefer explicit paths; fall back to bot .env if webapp .env is empty.
+    if [[ -z "$SSL_CERT" ]]; then
+        SSL_CERT=$(get_env_value "SSL_CERT")
     fi
-    if [[ -n "$SSL_CERT" && ( -z "$SSL_KEY" || ! -f "$SSL_KEY" ) ]]; then
-        warn "SSL private key missing or not found — continuing without SSL for now."
-        SSL_CERT=""
-        SSL_KEY=""
+    if [[ -z "$SSL_KEY" ]]; then
+        SSL_KEY=$(get_env_value "SSL_KEY")
     fi
 
     # webapp_deploy (from lib) needs these bot-side values too.
     # Also ensure deploy-time vars are always set (set -u safe).
+    # SSL validation (existence, pair match, expiry, install copy) happens
+    # inside webapp_deploy via webapp_validate_and_install_ssl.
     BOT_TOKEN=$(get_env_value "BOT_TOKEN")
     ADMIN_IDS=$(get_env_value "ADMIN_IDS")
     WEBAPP_VENV="${WEBAPP_VENV:-$WEBAPP_DIR/.venv}"
     LOG_FILE="${LOG_FILE:-/var/log/hollowconbot-web-manage.log}"
     touch "$LOG_FILE" 2>/dev/null || true
+
+    if [[ -n "$SSL_CERT" || -n "$SSL_KEY" ]]; then
+        echo ""
+        log "SSL paths to validate:"
+        echo "    cert: ${SSL_CERT:-<empty>}"
+        echo "    key:  ${SSL_KEY:-<empty>}"
+    fi
 
     echo ""
     webapp_deploy

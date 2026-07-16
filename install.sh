@@ -220,6 +220,13 @@ collect_config() {
             echo -e "${CYAN}11) SSL private key path:${NC}"
             read -rp "    SSL_KEY: " SSL_KEY
             SSL_KEY="${SSL_KEY// /}"
+            if [[ ! -f "$SSL_CERT" ]]; then
+                warn "Certificate not found at $SSL_CERT — SSL will be skipped for now."
+                SSL_CERT=""; SSL_KEY=""
+            elif [[ -z "$SSL_KEY" || ! -f "$SSL_KEY" ]]; then
+                warn "Private key missing/not found — SSL will be skipped for now."
+                SSL_CERT=""; SSL_KEY=""
+            fi
         else
             SSL_KEY=""
         fi
