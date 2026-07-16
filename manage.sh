@@ -1,20 +1,24 @@
 #!/usr/bin/env bash
 # =============================================================================
-#  BananaBot — Bot Management Script
-#  GitHub: https://github.com/mazyarzohdi/BananaBot
+#  HollowConBot — Bot Management Script
+#  GitHub: https://github.com/ReZeRoP/HollowConBot
 # =============================================================================
 
 set -euo pipefail
 
 # ------------------------------------------------------------
-INSTALL_DIR="/opt/BananaBot"
+INSTALL_DIR="/opt/HollowConBot"
 WEBAPP_DIR="$INSTALL_DIR/webapp"
-SERVICE_NAME="bananabot"
-WEBAPP_SERVICE="bananabot-web"
+SERVICE_NAME="hollowconbot"
+WEBAPP_SERVICE="hollowconbot-web"
 ENV_FILE="$INSTALL_DIR/.env"
 WEBAPP_ENV="$WEBAPP_DIR/.env"
 DB_PATH="$INSTALL_DIR/data/bot.db"
 BACKUP_DIR="$INSTALL_DIR/data/backups"
+# Required by lib/webapp_lib.sh (sourced by web panel actions).
+# Without these, `set -u` aborts configure with: WEBAPP_VENV: unbound variable
+WEBAPP_VENV="$WEBAPP_DIR/.venv"
+LOG_FILE="/var/log/hollowconbot-web-manage.log"
 
 # ------------------------------------------------------------
 RED='\033[0;31m'
@@ -41,7 +45,7 @@ check_root() {
 
 check_installed() {
     if [[ ! -d "$INSTALL_DIR" ]]; then
-        error "BananaBot is not installed. Run install.sh first."
+        error "HollowConBot is not installed. Run install.sh first."
         exit 1
     fi
 }
@@ -83,7 +87,7 @@ print_header() {
     clear
     echo -e "${BOLD}${BLUE}"
     echo "  ╔══════════════════════════════════════════╗"
-    echo "  ║       BananaBot — Bot Management Panel       ║"
+    echo "  ║       HollowConBot — Bot Management Panel       ║"
     echo "  ╚══════════════════════════════════════════╝"
     echo -e "${NC}"
     bot_status
@@ -339,11 +343,11 @@ action_update() {
     fi
     log "Fetching latest version from GitHub..."
     # پشتیبان از .env
-    cp "$ENV_FILE" "/tmp/.env.bananabot.bak"
+    cp "$ENV_FILE" "/tmp/.env.hollowconbot.bak"
     git -C "$INSTALL_DIR" fetch origin >> /dev/null 2>&1
     git -C "$INSTALL_DIR" reset --hard origin/main >> /dev/null 2>&1
     # بازگرداندن .env
-    cp "/tmp/.env.bananabot.bak" "$ENV_FILE"
+    cp "/tmp/.env.hollowconbot.bak" "$ENV_FILE"
     # به‌روزرسانی کتابخانه‌ها
     log "Updating Python libraries..."
     "$INSTALL_DIR/.venv/bin/pip" install -r "$INSTALL_DIR/requirements.txt" --quiet
@@ -379,7 +383,7 @@ action_uninstall() {
     log "Removing project files..."
     rm -rf "$INSTALL_DIR"
 
-    success "BananaBot completely removed."
+    success "HollowConBot completely removed."
     echo ""
     exit 0
 }
@@ -656,10 +660,19 @@ action_webapp_configure() {
         SSL_CERT=""
         SSL_KEY=""
     fi
+    if [[ -n "$SSL_CERT" && ( -z "$SSL_KEY" || ! -f "$SSL_KEY" ) ]]; then
+        warn "SSL private key missing or not found — continuing without SSL for now."
+        SSL_CERT=""
+        SSL_KEY=""
+    fi
 
     # webapp_deploy (from lib) needs these bot-side values too.
+    # Also ensure deploy-time vars are always set (set -u safe).
     BOT_TOKEN=$(get_env_value "BOT_TOKEN")
     ADMIN_IDS=$(get_env_value "ADMIN_IDS")
+    WEBAPP_VENV="${WEBAPP_VENV:-$WEBAPP_DIR/.venv}"
+    LOG_FILE="${LOG_FILE:-/var/log/hollowconbot-web-manage.log}"
+    touch "$LOG_FILE" 2>/dev/null || true
 
     echo ""
     webapp_deploy
