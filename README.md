@@ -1,4 +1,4 @@
-# 🍌 BananaBot — ربات تلگرام مدیریت و فروش سرویس VPN
+# 🍌 HollowConBot — ربات تلگرام مدیریت و فروش سرویس VPN
 
 ربات تلگرامی برای فروش و مدیریت خودکار سرویس‌های VPN روی پنل sanaei  **3x-ui**.
 
@@ -43,14 +43,14 @@
 ## 🚀 نصب سریع (توصیه‌شده)
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/mazyarzohdi/BananaBot/main/install.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/ReZeRoP/HollowConBot/main/install.sh)
 ```
 
 یا دستی:
 
 ```bash
-git clone https://github.com/mazyarzohdi/BananaBot.git
-cd BananaBot
+git clone https://github.com/ReZeRoP/HollowConBot.git
+cd HollowConBot
 sudo bash install.sh
 ```
 
@@ -96,17 +96,17 @@ REQUIRED_CHANNEL=@mychannel
 پس از نصب، برای مدیریت ربات:
 
 ```bash
-sudo bash /opt/BananaBot/manage.sh
+sudo bash /opt/HollowConBot/manage.sh
 ```
 
 ### امکانات پنل مدیریت:
 
 | گزینه | عملکرد |
 |-------|---------|
-| روشن کردن | `systemctl start bananabot` |
-| خاموش کردن | `systemctl stop bananabot` |
-| ریستارت | `systemctl restart bananabot` |
-| لاگ زنده | `journalctl -u bananabot -f` |
+| روشن کردن | `systemctl start hollowconbot` |
+| خاموش کردن | `systemctl stop hollowconbot` |
+| ریستارت | `systemctl restart hollowconbot` |
+| لاگ زنده | `journalctl -u hollowconbot -f` |
 | تغییر توکن | ویرایش `BOT_TOKEN` در `.env` |
 | تغییر ادمین | ویرایش `ADMIN_IDS` در `.env` |
 | تغییر کارت | ویرایش `CARD_NUMBER` و `CARD_HOLDER` |
@@ -150,7 +150,7 @@ sudo bash /opt/BananaBot/manage.sh
 ## 📁 ساختار پروژه
 
 ```
-BananaBot/
+HollowConBot/
 ├── install.sh              # اسکریپت نصب خودکار
 ├── manage.sh               # اسکریپت مدیریت ربات
 ├── main.py                 # نقطه ورود
@@ -179,18 +179,18 @@ BananaBot/
 
 ```bash
 # وضعیت ربات
-systemctl status bananabot
+systemctl status hollowconbot
 
 # شروع / توقف / ریستارت
-systemctl start bananabot
-systemctl stop bananabot
-systemctl restart bananabot
+systemctl start hollowconbot
+systemctl stop hollowconbot
+systemctl restart hollowconbot
 
 # مشاهده لاگ زنده
-journalctl -u bananabot -f
+journalctl -u hollowconbot -f
 
 # لاگ آخرین اجرا
-journalctl -u bananabot -n 100 --no-pager
+journalctl -u hollowconbot -n 100 --no-pager
 ```
 
 ---
