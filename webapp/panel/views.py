@@ -1,4 +1,4 @@
-"""Views for BananaBot Web Panel."""
+"""Views for HollowConBot Web Panel."""
 
 import json
 from django.shortcuts import render, redirect

@@ -1,6 +1,6 @@
 """Telegram authentication helpers.
 
-BananaBot's panel supports two separate Telegram auth flows, which use two
+HollowConBot's panel supports two separate Telegram auth flows, which use two
 different signing algorithms per Telegram's own docs — mixing them up is a
 common cause of "auth always fails":
 
