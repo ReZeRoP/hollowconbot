@@ -1,4 +1,4 @@
-"""Canonical BananaBot database schema + a generic schema reconciler.
+"""Canonical HollowConBot database schema + a generic schema reconciler.
 
 Why this file exists
 ---------------------

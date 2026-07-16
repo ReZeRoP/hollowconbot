@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-#  BananaBot — shared web panel deployment helpers.
+#  HollowConBot — shared web panel deployment helpers.
 #  Sourced by both install.sh and manage.sh so this logic only lives once.
 #
 #  Callers must have these already set before sourcing/calling:
@@ -8,6 +8,24 @@
 #    BOT_TOKEN, ADMIN_IDS, WEB_DOMAIN, WEB_PORT, WEB_PATH, SSL_CERT, SSL_KEY
 #  and the log()/success()/warn()/error() helper functions.
 # =============================================================================
+
+# Safe defaults so manage.sh (or older installs) never hit unbound-variable
+# errors under `set -u` when a caller forgets to export these.
+: "${INSTALL_DIR:=/opt/HollowConBot}"
+: "${WEBAPP_DIR:=${INSTALL_DIR}/webapp}"
+: "${WEBAPP_VENV:=${WEBAPP_DIR}/.venv}"
+: "${WEBAPP_SERVICE:=hollowconbot-web}"
+: "${LOG_FILE:=/var/log/hollowconbot-web-manage.log}"
+: "${WEB_PORT:=8080}"
+: "${WEB_PATH:=/panel}"
+: "${SSL_CERT:=}"
+: "${SSL_KEY:=}"
+: "${BOT_TOKEN:=}"
+: "${ADMIN_IDS:=}"
+
+# Ensure the log file exists so redirects don't fail on a missing path.
+mkdir -p "$(dirname "$LOG_FILE")" 2>/dev/null || true
+touch "$LOG_FILE" 2>/dev/null || true
 
 # Write (or rewrite) the webapp's own .env file.
 webapp_write_env() {
@@ -47,19 +65,19 @@ set +a
 exec "\$(dirname "\$0")/.venv/bin/gunicorn" \\
     --workers 2 \\
     --bind "0.0.0.0:\${WEB_PORT:-8080}" \\
-    --access-logfile /var/log/bananabot-web-access.log \\
-    --error-logfile  /var/log/bananabot-web-error.log \\
+    --access-logfile /var/log/hollowconbot-web-access.log \\
+    --error-logfile  /var/log/hollowconbot-web-error.log \\
 STARTEOF
 
     if [[ -n "$SSL_CERT" && -f "$SSL_CERT" && -n "$SSL_KEY" && -f "$SSL_KEY" ]]; then
         cat >> "$WEBAPP_DIR/start_webapp.sh" << STARTEOF
     --certfile "${SSL_CERT}" \\
     --keyfile  "${SSL_KEY}" \\
-    bananabot_web.wsgi:application
+    hollowconbot_web.wsgi:application
 STARTEOF
     else
         cat >> "$WEBAPP_DIR/start_webapp.sh" << STARTEOF
-    bananabot_web.wsgi:application
+    hollowconbot_web.wsgi:application
 STARTEOF
     fi
     chmod +x "$WEBAPP_DIR/start_webapp.sh"
@@ -68,7 +86,7 @@ STARTEOF
 webapp_create_service() {
     cat > "/etc/systemd/system/${WEBAPP_SERVICE}.service" << EOF
 [Unit]
-Description=BananaBot Web Panel
+Description=HollowConBot Web Panel
 After=network.target
 
 [Service]
@@ -136,10 +154,23 @@ webapp_deploy() {
 # manually) but the bot will skip showing the in-chat button.
 webapp_sync_panel_url() {
     local proto="http"
-    if [[ -n "$SSL_CERT" && -f "$SSL_CERT" && -n "$SSL_KEY" && -f "$SSL_KEY" ]]; then
+    if [[ -n "${SSL_CERT:-}" && -f "$SSL_CERT" && -n "${SSL_KEY:-}" && -f "$SSL_KEY" ]]; then
         proto="https"
     fi
-    local panel_url="${proto}://${WEB_DOMAIN}:${WEB_PORT}${WEB_PATH}/"
+
+    # Omit default ports so Telegram / browsers treat the URL as clean HTTPS.
+    local hostport="${WEB_DOMAIN}"
+    if [[ -n "${WEB_PORT:-}" ]]; then
+        if [[ "$proto" == "https" && "$WEB_PORT" != "443" ]] || \
+           [[ "$proto" == "http"  && "$WEB_PORT" != "80"  ]]; then
+            hostport="${WEB_DOMAIN}:${WEB_PORT}"
+        fi
+    fi
+
+    local path_prefix="${WEB_PATH:-/panel}"
+    [[ "${path_prefix:0:1}" != "/" ]] && path_prefix="/${path_prefix}"
+    path_prefix="${path_prefix%/}"
+    local panel_url="${proto}://${hostport}${path_prefix}/"
 
     if grep -qE '^PANEL_URL=' "$INSTALL_DIR/.env" 2>/dev/null; then
         sed -i "s|^PANEL_URL=.*|PANEL_URL=${panel_url}|" "$INSTALL_DIR/.env"
